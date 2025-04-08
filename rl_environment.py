@@ -47,7 +47,12 @@ class TrafficEnvironment:
             "up": {0: [], 1: [], 2: [], "crossed": 0},
         }
         waiting_vehicles = {"right": 0, "down": 0, "left": 0, "up": 0}
-        emission_counts = {"right": 0, "down": 0, "left": 0, "up": 0}
+        emission_counts = {
+            "right": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+            "down": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+            "left": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+            "up": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+        }
         waiting_times = {"right": {}, "down": {}, "left": {}, "up": {}}
         crashes = 0
         self.total_reward = 0
@@ -156,7 +161,11 @@ class TrafficEnvironment:
                         )
 
         # Penalty for emissions (from braking and accelerating)
-        total_emissions = sum(emission_counts.values())
+        # Use the total emissions that already account for vehicle types
+        total_emissions = sum(
+            emission_counts[direction]["total"]
+            for direction in directionNumbers.values()
+        )
         reward += EMISSION_FACTOR * total_emissions
 
         # Severe penalty for crashes

@@ -18,16 +18,16 @@ log_file = os.path.join(
     log_dir, f"traffic_simulation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 )
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
 )
 logger = logging.getLogger("TrafficSimulation")
 
 # Enable/Disable rendering
-ENABLE_RENDERING = False  # Set to True to see the visualization
+ENABLE_RENDERING = True  # Set to True to see the visualization
 MAX_EPISODES = 10  # Set the maximum number of training episodes
-SHOW_FINAL_EPOCH_ONLY = True  # Set to True to only show the final epoch
+SHOW_FINAL_EPOCH_ONLY = False  # Set to True to only show the final epoch
 
 # Default values of signal timers
 defaultGreen = {0: 10, 1: 10, 2: 10, 3: 10}
@@ -35,7 +35,7 @@ defaultRed = 150
 defaultYellow = 5
 
 # RL Environment settings
-MANUAL_CONTROL = False  # Set to False for AI control
+MANUAL_CONTROL = True  # Set to True for manual control (no AI)
 MAX_WAITING_TIME = 100  # Max time a car can wait before maximum penalty
 EMISSION_FACTOR = 0.1  # Penalty factor for emissions
 CRASH_PENALTY = -100  # Penalty for a crash
@@ -62,6 +62,14 @@ speeds = {
     "bike": 2.5,
 }  # average speeds of vehicles
 
+# Vehicle-specific emission factors (CO2 relative units)
+emission_factors = {
+    "car": 1.0,  # Base emission (1.0 = 100%)
+    "bus": 2.5,  # Buses emit 2.5x more than cars
+    "truck": 3.0,  # Trucks emit 3x more than cars
+    "bike": 0.3,  # Bikes emit 30% of what cars emit
+}
+
 # Coordinates of vehicles' start
 x = {
     "right": [0, 0, 0],
@@ -87,7 +95,13 @@ directionNumbers = {0: "right", 1: "down", 2: "left", 3: "up"}
 
 # Metrics for RL
 waiting_vehicles = {"right": 0, "down": 0, "left": 0, "up": 0}
-emission_counts = {"right": 0, "down": 0, "left": 0, "up": 0}
+# Update emission_counts to track by vehicle type as well as direction
+emission_counts = {
+    "right": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+    "down": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+    "left": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+    "up": {"car": 0, "bus": 0, "truck": 0, "bike": 0, "total": 0},
+}
 crashes = 0
 total_reward = 0
 waiting_times = {"right": {}, "down": {}, "left": {}, "up": {}}

@@ -12,8 +12,10 @@ from utils import (
     currentGreen,
     currentYellow,
     emission_counts,
+    emission_factors,
     crashes,
     simulation,
+    logger,
 )
 
 
@@ -42,6 +44,11 @@ class Vehicle(pygame.sprite.Sprite):
         self.index = len(vehicles[direction][lane]) - 1
         path = "images/" + direction + "/" + vehicleClass + ".png"
         self.image = pygame.image.load(path)
+
+        # Initialize font for waiting time display
+        self.font = pygame.font.Font(
+            None, 24
+        )  # Using a smaller font size for better visibility
 
         if (
             len(vehicles[direction][lane]) > 1
@@ -90,18 +97,56 @@ class Vehicle(pygame.sprite.Sprite):
         simulation.add(self)
 
     def render(self, screen):
+        # Draw the vehicle
         screen.blit(self.image, (self.x, self.y))
 
-    def move(self):
-        old_x, old_y = self.x, self.y
+        # Only show waiting time if the vehicle is waiting (not moving)
+        if self.waiting_time > 0 and not self.crossed:
+            # Create text surface with waiting time
+            waiting_text = f"{int(self.waiting_time)}s"
+            text_surface = self.font.render(
+                waiting_text, True, (255, 255, 255)
+            )  # White text
+
+            # Calculate position for text (centered above vehicle)
+            text_x = (
+                self.x
+                + (self.image.get_rect().width - text_surface.get_rect().width) // 2
+            )
+            text_y = (
+                self.y - text_surface.get_rect().height - 5
+            )  # 5 pixels above vehicle
+
+            # Draw black background for better visibility
+            padding = 2
+            bg_rect = pygame.Rect(
+                text_x - padding,
+                text_y - padding,
+                text_surface.get_rect().width + 2 * padding,
+                text_surface.get_rect().height + 2 * padding,
+            )
+            pygame.draw.rect(screen, (0, 0, 0), bg_rect)  # Black background
+
+            # Draw the text
+            screen.blit(text_surface, (text_x, text_y))
+
+    def move(self, vehicles, currentGreen, currentYellow, stopLines, movingGap):
+        old_x = self.x
+        old_y = self.y
         movement_occurred = False
+
+        logger.debug(
+            f"Vehicle {self.id} ({self.direction}) attempting movement - Current position: ({self.x}, {self.y})"
+        )
 
         if self.direction == "right":
             if (
                 self.crossed == 0
                 and self.x + self.image.get_rect().width > stopLines[self.direction]
-            ):  # if the image has crossed stop line now
+            ):
                 self.crossed = 1
+                logger.debug(f"Vehicle {self.id} crossed stop line in right direction")
+
             should_move = (
                 self.x + self.image.get_rect().width <= self.stop
                 or self.crossed == 1
@@ -111,15 +156,28 @@ class Vehicle(pygame.sprite.Sprite):
                 or self.x + self.image.get_rect().width
                 < (vehicles[self.direction][self.lane][self.index - 1].x - movingGap)
             )
+
+            if not should_move:
+                logger.debug(
+                    f"Vehicle {self.id} not moving right: stop={self.x + self.image.get_rect().width <= self.stop}, "
+                    f"crossed={self.crossed == 1}, green={currentGreen == 0}, "
+                    f"spacing={self.index == 0 or self.x + self.image.get_rect().width < (vehicles[self.direction][self.lane][self.index - 1].x - movingGap)}"
+                )
+
             if should_move:
-                self.x += self.speed  # move the vehicle
+                self.x += self.speed
                 movement_occurred = True
+                logger.debug(
+                    f"Vehicle {self.id} moved right to position ({self.x}, {self.y})"
+                )
         elif self.direction == "down":
             if (
                 self.crossed == 0
                 and self.y + self.image.get_rect().height > stopLines[self.direction]
             ):
                 self.crossed = 1
+                logger.debug(f"Vehicle {self.id} crossed stop line in down direction")
+
             should_move = (
                 self.y + self.image.get_rect().height <= self.stop
                 or self.crossed == 1
@@ -129,12 +187,25 @@ class Vehicle(pygame.sprite.Sprite):
                 or self.y + self.image.get_rect().height
                 < (vehicles[self.direction][self.lane][self.index - 1].y - movingGap)
             )
+
+            if not should_move:
+                logger.debug(
+                    f"Vehicle {self.id} not moving down: stop={self.y + self.image.get_rect().height <= self.stop}, "
+                    f"crossed={self.crossed == 1}, green={currentGreen == 1}, "
+                    f"spacing={self.index == 0 or self.y + self.image.get_rect().height < (vehicles[self.direction][self.lane][self.index - 1].y - movingGap)}"
+                )
+
             if should_move:
                 self.y += self.speed
                 movement_occurred = True
+                logger.debug(
+                    f"Vehicle {self.id} moved down to position ({self.x}, {self.y})"
+                )
         elif self.direction == "left":
             if self.crossed == 0 and self.x < stopLines[self.direction]:
                 self.crossed = 1
+                logger.debug(f"Vehicle {self.id} crossed stop line in left direction")
+
             should_move = (
                 self.x >= self.stop
                 or self.crossed == 1
@@ -150,12 +221,25 @@ class Vehicle(pygame.sprite.Sprite):
                     + movingGap
                 )
             )
+
+            if not should_move:
+                logger.debug(
+                    f"Vehicle {self.id} not moving left: stop={self.x >= self.stop}, "
+                    f"crossed={self.crossed == 1}, green={currentGreen == 2}, "
+                    f"spacing={self.index == 0 or self.x > (vehicles[self.direction][self.lane][self.index - 1].x + vehicles[self.direction][self.lane][self.index - 1].image.get_rect().width + movingGap)}"
+                )
+
             if should_move:
                 self.x -= self.speed
                 movement_occurred = True
+                logger.debug(
+                    f"Vehicle {self.id} moved left to position ({self.x}, {self.y})"
+                )
         elif self.direction == "up":
             if self.crossed == 0 and self.y < stopLines[self.direction]:
                 self.crossed = 1
+                logger.debug(f"Vehicle {self.id} crossed stop line in up direction")
+
             should_move = (
                 self.y >= self.stop
                 or self.crossed == 1
@@ -171,9 +255,20 @@ class Vehicle(pygame.sprite.Sprite):
                     + movingGap
                 )
             )
+
+            if not should_move:
+                logger.debug(
+                    f"Vehicle {self.id} not moving up: stop={self.y >= self.stop}, "
+                    f"crossed={self.crossed == 1}, green={currentGreen == 3}, "
+                    f"spacing={self.index == 0 or self.y > (vehicles[self.direction][self.lane][self.index - 1].y + vehicles[self.direction][self.lane][self.index - 1].image.get_rect().height + movingGap)}"
+                )
+
             if should_move:
                 self.y -= self.speed
                 movement_occurred = True
+                logger.debug(
+                    f"Vehicle {self.id} moved up to position ({self.x}, {self.y})"
+                )
 
         # Update metrics for RL
         if not movement_occurred:
@@ -187,11 +282,17 @@ class Vehicle(pygame.sprite.Sprite):
             if old_x != self.x or old_y != self.y:
                 # Vehicle had to stop (was moving and now stopped)
                 self.decelerated = True
-                emission_counts[self.direction] += 1
+                # Use vehicle-specific emission factor when decelerating
+                emission_amount = emission_factors[self.vehicleClass]
+                emission_counts[self.direction][self.vehicleClass] += emission_amount
+                emission_counts[self.direction]["total"] += emission_amount
         elif self.waiting_time > 0 and (old_x != self.x or old_y != self.y):
             # Vehicle started moving after waiting
             self.accelerated = True
-            emission_counts[self.direction] += 1
+            # Use vehicle-specific emission factor when accelerating
+            emission_amount = emission_factors[self.vehicleClass]
+            emission_counts[self.direction][self.vehicleClass] += emission_amount
+            emission_counts[self.direction]["total"] += emission_amount
             self.waiting_time = 0
 
         # Check for collision (simplified version)

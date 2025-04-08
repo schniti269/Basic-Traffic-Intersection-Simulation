@@ -16,7 +16,12 @@ from utils import (
     currentYellow,
     signalCoods,
     signalTimerCoods,
+    emission_counts,
     simulation,
+    vehicles,
+    stopLines,
+    movingGap,
+    defaultStop,
 )
 from traffic_signal import initialize
 from vehicle import generateVehicles
@@ -38,6 +43,10 @@ class Main:
     white = (255, 255, 255)
     green = (0, 255, 0)
     red = (255, 0, 0)
+    yellow = (255, 255, 0)
+    blue = (0, 0, 255)
+    purple = (128, 0, 128)
+    orange = (255, 165, 0)
 
     # Screensize
     screenWidth = 1400
@@ -53,7 +62,7 @@ class Main:
         background = pygame.image.load("images/intersection.png")
 
         screen = pygame.display.set_mode(screenSize)
-        pygame.display.set_caption("TRAFFIC RL SIMULATION")
+        pygame.display.set_caption("TRAFFIC SIMULATION")
         logger.info("Pygame display initialized")
 
         # Loading signal images and font
@@ -145,7 +154,9 @@ class Main:
         # --- Simulation Update (Movement) ---
         # This needs to run regardless of rendering
         for vehicle in simulation:
-            vehicle.move()  # Move vehicles based on simulation logic
+            vehicle.move(
+                vehicles, currentGreen, currentYellow, stopLines, movingGap
+            )  # Move vehicles based on simulation logic
         # --- End Simulation Update ---
 
         # --- Rendering Section ---
@@ -166,6 +177,26 @@ class Main:
                     f"Step: {env.steps}",
                     f"Waiting Cars: {sum([len(waiting_times[d]) for d in directionNumbers.values()])}",
                     f"Q-Table Size: {len(env.q_table)}",
+                ]
+
+                # Add emissions by vehicle type
+                for vehicle_class in ["car", "bus", "truck", "bike"]:
+                    emission_sum = 0
+                    for direction in directionNumbers.values():
+                        emission_sum += emission_counts[direction][vehicle_class]
+                    metrics_text.append(
+                        f"{vehicle_class.capitalize()} Emissions: {emission_sum:.1f}"
+                    )
+
+                for i, text in enumerate(metrics_text):
+                    text_surface = font.render(text, True, white, black)
+                    screen.blit(text_surface, (10, 10 + i * 30))
+            else:
+                # Display manual control metrics
+                metrics_text = [
+                    f"Manual Control Mode",
+                    f"Crashes: {crashes}",
+                    f"Waiting Cars: {sum([len(waiting_times[d]) for d in directionNumbers.values()])}",
                 ]
 
                 for i, text in enumerate(metrics_text):
@@ -193,10 +224,96 @@ class Main:
                 )
                 screen.blit(signalTexts[i], signalTimerCoods[i])
 
+            # Draw stop lines with visual indicators
+            # Right direction stop line
+            pygame.draw.line(
+                screen, red, (stopLines["right"], 300), (stopLines["right"], 450), 3
+            )
+            pygame.draw.rect(screen, red, (stopLines["right"] - 5, 300, 10, 150), 2)
+
+            # Down direction stop line
+            pygame.draw.line(
+                screen, red, (700, stopLines["down"]), (900, stopLines["down"]), 3
+            )
+            pygame.draw.rect(screen, red, (700, stopLines["down"] - 5, 200, 10), 2)
+
+            # Left direction stop line
+            pygame.draw.line(
+                screen, red, (stopLines["left"], 400), (stopLines["left"], 550), 3
+            )
+            pygame.draw.rect(screen, red, (stopLines["left"] - 5, 400, 10, 150), 2)
+
+            # Up direction stop line
+            pygame.draw.line(
+                screen, red, (500, stopLines["up"]), (700, stopLines["up"]), 3
+            )
+            pygame.draw.rect(screen, red, (500, stopLines["up"] - 5, 200, 10), 2)
+
+            # Draw default stop positions
+            # Right direction default stop
+            pygame.draw.line(
+                screen,
+                yellow,
+                (defaultStop["right"], 300),
+                (defaultStop["right"], 450),
+                2,
+            )
+
+            # Down direction default stop
+            pygame.draw.line(
+                screen,
+                yellow,
+                (700, defaultStop["down"]),
+                (900, defaultStop["down"]),
+                2,
+            )
+
+            # Left direction default stop
+            pygame.draw.line(
+                screen,
+                yellow,
+                (defaultStop["left"], 400),
+                (defaultStop["left"], 550),
+                2,
+            )
+
+            # Up direction default stop
+            pygame.draw.line(
+                screen, yellow, (500, defaultStop["up"]), (700, defaultStop["up"]), 2
+            )
+
+            # Add labels for stop lines and default stops
+            stop_line_font = pygame.font.Font(None, 24)
+
+            # Right direction labels
+            stop_line_text = stop_line_font.render("Stop Line", True, white)
+            screen.blit(stop_line_text, (stopLines["right"] - 40, 280))
+            default_stop_text = stop_line_font.render("Default Stop", True, white)
+            screen.blit(default_stop_text, (defaultStop["right"] - 60, 280))
+
+            # Down direction labels
+            stop_line_text = stop_line_font.render("Stop Line", True, white)
+            screen.blit(stop_line_text, (720, stopLines["down"] - 20))
+            default_stop_text = stop_line_font.render("Default Stop", True, white)
+            screen.blit(default_stop_text, (720, defaultStop["down"] - 20))
+
+            # Left direction labels
+            stop_line_text = stop_line_font.render("Stop Line", True, white)
+            screen.blit(stop_line_text, (stopLines["left"] - 40, 380))
+            default_stop_text = stop_line_font.render("Default Stop", True, white)
+            screen.blit(default_stop_text, (defaultStop["left"] - 60, 380))
+
+            # Up direction labels
+            stop_line_text = stop_line_font.render("Stop Line", True, white)
+            screen.blit(stop_line_text, (520, stopLines["up"] - 20))
+            default_stop_text = stop_line_font.render("Default Stop", True, white)
+            screen.blit(default_stop_text, (520, defaultStop["up"] - 20))
+
             # display the vehicles if rendering
             for vehicle in simulation:
-                screen.blit(vehicle.image, [vehicle.x, vehicle.y])
-                # vehicle.move() # Moved vehicle movement outside rendering block
+                vehicle.render(
+                    screen
+                )  # Use the vehicle's render method which includes waiting time display
 
             pygame.display.update()
         # --- End Rendering Section ---
