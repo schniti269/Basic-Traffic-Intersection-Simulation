@@ -38,8 +38,8 @@ logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
 # Enable/Disable rendering
-ENABLE_RENDERING = True  # Set to True to see the visualization
-MAX_EPISODES = 10  # Set the maximum number of training episodes
+ENABLE_RENDERING = False  # Default to False for neural network training
+MAX_EPISODES = 100  # Set the maximum number of training episodes for RL
 SHOW_FINAL_EPOCH_ONLY = False  # Set to True to only show the final epoch
 
 # Default values of signal timers
@@ -48,7 +48,7 @@ defaultRed = 150
 defaultYellow = 5
 
 # RL Environment settings
-MANUAL_CONTROL = True  # Set to True for manual control (no AI)
+MANUAL_CONTROL = False  # Set to False to use our neural controller
 MAX_WAITING_TIME = 100  # Max time a car can wait before maximum penalty
 EMISSION_FACTOR = 0.1  # Penalty factor for emissions
 CRASH_PENALTY = -100  # Penalty for a crash

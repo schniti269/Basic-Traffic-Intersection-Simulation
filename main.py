@@ -26,10 +26,20 @@ from utils import (
 from traffic_signal import initialize
 from vehicle import generateVehicles
 from rl_environment import TrafficEnvironment, DEFAULT_SCAN_ZONE_CONFIG
+from neural_model_01 import NeuralTrafficController, get_vehicles_in_zones
 
 
 # Initialize the environment to access scan zone config
 env = TrafficEnvironment()
+
+# Define training parameters
+STEPS_PER_EPOCH = 100000  # Number of simulation steps per training epoch
+TOTAL_EPOCHS = 10  # Total number of epochs to train
+
+# Create neural network controller instead of Q-learning
+neural_controller = NeuralTrafficController(
+    steps_per_epoch=STEPS_PER_EPOCH, total_epochs=TOTAL_EPOCHS
+)
 
 
 # Function to print vehicle matrix for a given zone
@@ -144,8 +154,8 @@ def print_vehicle_matrix(direction):
 
 # Main simulation class for visualization
 class Main:
-    # Create RL environment
-    env = env  # Use the already initialized environment
+    # Create neural controller
+    neural_controller = neural_controller
 
     thread1 = threading.Thread(name="initialization", target=initialize, args=())
     thread1.daemon = True
@@ -168,15 +178,15 @@ class Main:
     screenSize = (screenWidth, screenHeight)
 
     # Initialize Pygame and load assets only if rendering is enabled
-    if ENABLE_RENDERING and (
-        not SHOW_FINAL_EPOCH_ONLY or env.episodes_completed >= MAX_EPISODES - 1
-    ):
+    should_render = neural_controller.should_render()
+
+    if should_render:
         pygame.init()  # Ensure pygame is initialized if rendering
         # Setting background image i.e. image of intersection
         background = pygame.image.load("images/intersection.png")
 
         screen = pygame.display.set_mode(screenSize)
-        pygame.display.set_caption("TRAFFIC SIMULATION")
+        pygame.display.set_caption("TRAFFIC SIMULATION - NEURAL CONTROLLER")
         logger.info("Pygame display initialized")
 
         # Loading signal images and font
@@ -200,21 +210,24 @@ class Main:
     simulation_step = 0
     clock = pygame.time.Clock()
 
-    # For manual testing of the RL interface
-    if not MANUAL_CONTROL:
-        # Reset environment
-        state = env.reset()
-        action = env.get_action(state)  # Get action from Q-learning agent
-        logger.info("RL agent initialized")
+    # For neural controller
+    total_steps = 0
+    epoch_steps = 0
+    training_sample_size = 1000  # Steps per training sample
+    running = True  # Use a flag to control the loop
+    global crashes  # Declare crashes as global before the loop starts
 
     # Main simulation loop
-    running = True  # Use a flag to control the loop
     while running:
+        # DEBUG: Check if main loop is running
+        if total_steps % 1000 == 0:  # Print less frequently than step update
+            print(f"Main loop running - Step: {total_steps}", flush=True)
+
+        # Get all pygame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 logger.info("Simulation terminated by user")
                 running = False  # Set flag to false to exit loop
-                # sys.exit() # Avoid sys.exit() for cleaner shutdown if possible
             elif event.type == pygame.KEYDOWN:
                 # Toggle coordinate display with 'C' key
                 if event.key == pygame.K_c:
@@ -231,107 +244,137 @@ class Main:
                     print_vehicle_matrix("left")
                 elif event.key == pygame.K_4:
                     print_vehicle_matrix("up")
+                # Space key to continue after visualization
+                elif (
+                    event.key == pygame.K_SPACE and neural_controller.waiting_for_space
+                ):
+                    neural_controller.waiting_for_space = False
+                    neural_controller.show_render = False
+                    logger.info("Continuing training after visualization")
 
-        # --- RL Step ---
-        if not MANUAL_CONTROL:
-            # Take step in environment
-            next_state, reward, done, info = env.step(action)
+        # --- Neural Controller Step ---
+        # Get data from all 4 scan zones
+        scan_zones = get_vehicles_in_zones(
+            directionNumbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG
+        )
 
-            # Update Q-table
-            env.update_q_table(state, action, reward, next_state, done)
+        # Calculate metrics for reward
+        total_waiting = sum([len(waiting_times[d]) for d in directionNumbers.values()])
+        avg_speed = 0
+        vehicle_count = 0
 
-            # Get next action
-            action = env.get_action(next_state)
+        # Calculate average speed across all vehicles
+        for d in directionNumbers.values():
+            for lane in range(3):
+                for vehicle in vehicles[d][lane]:
+                    avg_speed += vehicle.speed
+                    vehicle_count += 1
 
-            # logger.debug(f"Action: {action}, Reward: {reward}, Done: {done}") # Keep logging if desired
-            state = next_state
+        if vehicle_count > 0:
+            avg_speed /= vehicle_count
 
-            # Reset if episode is done
-            if done:
-                logger.info(
-                    f"Episode {env.episodes_completed} finished after {env.steps} steps. Total Reward: {env.total_reward}"
-                )
+        # Calculate total emissions
+        total_emissions = 0
+        for direction in directionNumbers.values():
+            for vehicle_class in ["car", "bus", "truck", "bike"]:
+                total_emissions += emission_counts[direction][vehicle_class]
 
-                # Check if we've reached the maximum number of episodes
-                if env.episodes_completed >= MAX_EPISODES:
-                    logger.info(f"Training completed after {MAX_EPISODES} episodes")
-                    # Enable rendering for the final epoch if specified
-                    if SHOW_FINAL_EPOCH_ONLY and not ENABLE_RENDERING:
-                        logger.info("Showing final epoch results")
-                        ENABLE_RENDERING = True
-                        # Initialize Pygame for final visualization
-                        pygame.init()
-                        background = pygame.image.load("images/intersection.png")
-                        screen = pygame.display.set_mode(screenSize)
-                        pygame.display.set_caption(
-                            "TRAFFIC RL SIMULATION - FINAL EPOCH"
-                        )
-                        redSignal = pygame.image.load("images/signals/red.png")
-                        yellowSignal = pygame.image.load("images/signals/yellow.png")
-                        greenSignal = pygame.image.load("images/signals/green.png")
-                        font = pygame.font.Font(None, 30)
-                        signalTexts = ["", "", "", ""]  # Initialize signalTexts list
-                    elif env.episodes_completed > MAX_EPISODES:
-                        # We're done after showing the final epoch
-                        running = False
-                        logger.info("Final epoch completed. Exiting.")
-                        break
+        # DEBUG: Check if controller update is reached
+        print(f"Step {total_steps}: Calling controller update...", flush=True)
+        active_lights = neural_controller.update(
+            scan_zones,
+            avg_speed,
+            crashes,
+            total_waiting,
+            total_emissions,
+            vehicle_count,
+        )
 
-                state = env.reset()
-                action = env.get_action(state)
-        # --- End RL Step ---
+        # Update step counts
+        total_steps += 1
+        epoch_steps += 1
+
+        # Check if we've completed a training epoch
+        if epoch_steps >= neural_controller.steps_per_epoch:
+            neural_controller.end_epoch()
+            epoch_steps = 0
+
+            # Reset waiting times and emission counts
+            for direction in directionNumbers.values():
+                waiting_times[direction] = {}
+                emission_counts[direction] = {
+                    "car": 0,
+                    "bus": 0,
+                    "truck": 0,
+                    "bike": 0,
+                    "total": 0,
+                }
+
+            # Reset global crashes count
+            crashes = 0
+
+            # Update rendering flag based on controller state
+            should_render = neural_controller.should_render()
+
+            # Initialize rendering if needed
+            if should_render and not ENABLE_RENDERING:
+                ENABLE_RENDERING = True
+                pygame.init()
+                background = pygame.image.load("images/intersection.png")
+                screen = pygame.display.set_mode(screenSize)
+                pygame.display.set_caption("TRAFFIC SIMULATION - NEURAL CONTROLLER")
+                redSignal = pygame.image.load("images/signals/red.png")
+                yellowSignal = pygame.image.load("images/signals/yellow.png")
+                greenSignal = pygame.image.load("images/signals/green.png")
+                font = pygame.font.Font(None, 30)
+            elif not should_render and ENABLE_RENDERING:
+                ENABLE_RENDERING = False
+
+        # Wait for space key if needed
+        if neural_controller.waiting_for_space:
+            # Just keep checking for space without advancing simulation
+            continue
+        # --- End Neural Controller Step ---
 
         # --- Simulation Update (Movement) ---
-        # This needs to run regardless of rendering
+        # Pass the list of active lights directly to the move function
+        # The move function needs to be updated to handle this list
+        # We also need to remove the currentYellow logic for now, or adapt it.
+        # Let's assume the vehicle move logic can handle the active_lights list.
         for vehicle in simulation:
-            vehicle.move(
-                vehicles, currentGreen, currentYellow, stopLines, movingGap
-            )  # Move vehicles based on simulation logic
+            # We need to modify vehicle.move to accept active_lights instead of currentGreen/currentYellow
+            vehicle.move(vehicles, active_lights, stopLines, movingGap)
         # --- End Simulation Update ---
 
         # --- Rendering Section ---
-        if ENABLE_RENDERING and (
-            not SHOW_FINAL_EPOCH_ONLY or env.episodes_completed >= MAX_EPISODES
-        ):
+        if ENABLE_RENDERING:
             screen.blit(background, (0, 0))  # display background in simulation
 
             # Always initialize signalTexts at the beginning of rendering section
             signalTexts = ["", "", "", ""]
 
-            # Display RL metrics if rendering
-            if not MANUAL_CONTROL:
-                metrics_text = [
-                    f"Episode: {env.episodes_completed}/{MAX_EPISODES}",
-                    f"Total Reward: {env.total_reward:.2f}",
-                    f"Crashes: {crashes}",
-                    f"Step: {env.steps}",
-                    f"Waiting Cars: {sum([len(waiting_times[d]) for d in directionNumbers.values()])}",
-                    f"Q-Table Size: {len(env.q_table)}",
-                ]
+            # Display neural metrics if rendering
+            metrics_text = [
+                f"Epoch: {neural_controller.current_epoch}",
+                f"Steps: {total_steps}",
+                f"Current Reward: {neural_controller.epoch_reward:.2f}",
+                f"Crashes: {crashes}",
+                f"Waiting Cars: {total_waiting}",
+                f"Epsilon: {neural_controller.epsilon:.3f}",
+            ]
 
-                # Add emissions by vehicle type
-                for vehicle_class in ["car", "bus", "truck", "bike"]:
-                    emission_sum = 0
-                    for direction in directionNumbers.values():
-                        emission_sum += emission_counts[direction][vehicle_class]
-                    metrics_text.append(
-                        f"{vehicle_class.capitalize()} Emissions: {emission_sum:.1f}"
-                    )
+            # Add emissions by vehicle type
+            for vehicle_class in ["car", "bus", "truck", "bike"]:
+                emission_sum = 0
+                for direction in directionNumbers.values():
+                    emission_sum += emission_counts[direction][vehicle_class]
+                metrics_text.append(
+                    f"{vehicle_class.capitalize()} Emissions: {emission_sum:.1f}"
+                )
 
-                for i, text in enumerate(metrics_text):
-                    text_surface = font.render(text, True, white, black)
-                    screen.blit(text_surface, (10, 10 + i * 30))
-            else:
-                # Display manual control metrics
-                metrics_text = [
-                    f"Manual Control Mode",
-                    f"Crashes: {crashes}",
-                    f"Waiting Cars: {sum([len(waiting_times[d]) for d in directionNumbers.values()])}",
-                ]
-
-                for i, text in enumerate(metrics_text):
-                    text_surface = font.render(text, True, white, black)
-                    screen.blit(text_surface, (10, 10 + i * 30))
+            for i, text in enumerate(metrics_text):
+                text_surface = font.render(text, True, white, black)
+                screen.blit(text_surface, (10, 10 + i * 30))
 
             # Add key instruction text
             instruction_text = (
@@ -340,28 +383,26 @@ class Main:
             instruction_surface = font.render(instruction_text, True, white, black)
             screen.blit(instruction_surface, (500, 10))
 
+            if neural_controller.waiting_for_space:
+                space_text = "Press SPACE to continue training"
+                space_surface = font.render(space_text, True, white, black)
+                screen.blit(space_surface, (500, 40))
+
             # Visualize scan zones
             env.visualize_scan_zone(screen)
 
-            # Display signals and timers if rendering
+            # Display signals based on the active_lights list
+            # Remove the old timer logic for simplicity with multi-light activation
             for i in range(0, noOfSignals):
-                if i == currentGreen:
-                    if currentYellow == 1:
-                        signals[i].signalText = signals[i].yellow
-                        screen.blit(yellowSignal, signalCoods[i])
-                    else:
-                        signals[i].signalText = signals[i].green
-                        screen.blit(greenSignal, signalCoods[i])
+                if active_lights[i]:  # Check the boolean list from the controller
+                    screen.blit(greenSignal, signalCoods[i])
+                    signal_text = "ON"
                 else:
-                    if signals[i].red <= 10:
-                        signals[i].signalText = signals[i].red
-                    else:
-                        signals[i].signalText = "---"
                     screen.blit(redSignal, signalCoods[i])
+                    signal_text = "OFF"
 
-                signalTexts[i] = font.render(
-                    str(signals[i].signalText), True, white, black
-                )
+                # Display simple ON/OFF text instead of timer
+                signalTexts[i] = font.render(signal_text, True, white, black)
                 screen.blit(signalTexts[i], signalTimerCoods[i])
 
             # Draw stop lines with visual indicators
@@ -478,11 +519,11 @@ class Main:
             pygame.display.update()
         # --- End Rendering Section ---
 
-        # Control simulation speed - increase speed during training
-        if not ENABLE_RENDERING or env.episodes_completed < MAX_EPISODES:
-            clock.tick(600)  # Run much faster during training
-        else:
+        # Control simulation speed
+        if ENABLE_RENDERING:
             clock.tick(60)  # Normal speed for visualization
+        else:
+            clock.tick(6000000)  # Run much faster during training
 
     # Clean up Pygame if it was initialized
     if ENABLE_RENDERING:

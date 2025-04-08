@@ -130,14 +130,22 @@ class Vehicle(pygame.sprite.Sprite):
             # Draw the text
             screen.blit(text_surface, (text_x, text_y))
 
-    def move(self, vehicles, currentGreen, currentYellow, stopLines, movingGap):
+    def move(self, vehicles, active_lights, stopLines, movingGap):
         old_x = self.x
         old_y = self.y
         movement_occurred = False
 
-        logger.debug(
-            f"Vehicle {self.id} ({self.direction}) attempting movement - Current position: ({self.x}, {self.y})"
-        )
+        # logger.debug(
+        #     f"Vehicle {self.id} ({self.direction}) attempting movement - Pos: ({self.x:.1f}, {self.y:.1f}), ActiveLights: {active_lights}"
+        # )
+
+        # Determine if the light for this vehicle's direction is green
+        # Map direction name to light index (assuming right=0, down=1, left=2, up=3)
+        direction_to_light_index = {"right": 0, "down": 1, "left": 2, "up": 3}
+        my_light_index = direction_to_light_index.get(self.direction)
+        is_light_green = False
+        if my_light_index is not None and my_light_index < len(active_lights):
+            is_light_green = active_lights[my_light_index]
 
         if self.direction == "right":
             if (
@@ -145,130 +153,119 @@ class Vehicle(pygame.sprite.Sprite):
                 and self.x + self.image.get_rect().width > stopLines[self.direction]
             ):
                 self.crossed = 1
-                logger.debug(f"Vehicle {self.id} crossed stop line in right direction")
+                # logger.debug(f"Vehicle {self.id} crossed stop line right")
 
-            should_move = (
-                self.x + self.image.get_rect().width <= self.stop
-                or self.crossed == 1
-                or (currentGreen == 0 and currentYellow == 0)
-            ) and (
+            # Check spacing with the vehicle ahead
+            vehicle_ahead_clear = (
                 self.index == 0
                 or self.x + self.image.get_rect().width
                 < (vehicles[self.direction][self.lane][self.index - 1].x - movingGap)
             )
 
-            if not should_move:
-                logger.debug(
-                    f"Vehicle {self.id} not moving right: stop={self.x + self.image.get_rect().width <= self.stop}, "
-                    f"crossed={self.crossed == 1}, green={currentGreen == 0}, "
-                    f"spacing={self.index == 0 or self.x + self.image.get_rect().width < (vehicles[self.direction][self.lane][self.index - 1].x - movingGap)}"
-                )
+            # Determine if the vehicle should move
+            should_move = (
+                self.x + self.image.get_rect().width <= self.stop  # Before stop line
+                or self.crossed == 1  # Already crossed
+                or is_light_green  # Light is green
+            ) and vehicle_ahead_clear
+
+            # if not should_move:
+            #     logger.debug(
+            #         f"Vehicle {self.id} stopped right: stop_dist={self.x + self.image.get_rect().width <= self.stop}, "
+            #         f"crossed={self.crossed == 1}, green={is_light_green}, spacing={vehicle_ahead_clear}"
+            #     )
 
             if should_move:
                 self.x += self.speed
                 movement_occurred = True
-                logger.debug(
-                    f"Vehicle {self.id} moved right to position ({self.x}, {self.y})"
-                )
+                # logger.debug(f"Vehicle {self.id} moved right to ({self.x:.1f}, {self.y:.1f})")
+
         elif self.direction == "down":
             if (
                 self.crossed == 0
                 and self.y + self.image.get_rect().height > stopLines[self.direction]
             ):
                 self.crossed = 1
-                logger.debug(f"Vehicle {self.id} crossed stop line in down direction")
+                # logger.debug(f"Vehicle {self.id} crossed stop line down")
 
-            should_move = (
-                self.y + self.image.get_rect().height <= self.stop
-                or self.crossed == 1
-                or (currentGreen == 1 and currentYellow == 0)
-            ) and (
+            vehicle_ahead_clear = (
                 self.index == 0
                 or self.y + self.image.get_rect().height
                 < (vehicles[self.direction][self.lane][self.index - 1].y - movingGap)
             )
 
-            if not should_move:
-                logger.debug(
-                    f"Vehicle {self.id} not moving down: stop={self.y + self.image.get_rect().height <= self.stop}, "
-                    f"crossed={self.crossed == 1}, green={currentGreen == 1}, "
-                    f"spacing={self.index == 0 or self.y + self.image.get_rect().height < (vehicles[self.direction][self.lane][self.index - 1].y - movingGap)}"
-                )
+            should_move = (
+                self.y + self.image.get_rect().height <= self.stop
+                or self.crossed == 1
+                or is_light_green
+            ) and vehicle_ahead_clear
+
+            # if not should_move:
+            #     logger.debug(
+            #         f"Vehicle {self.id} stopped down: stop_dist={self.y + self.image.get_rect().height <= self.stop}, "
+            #         f"crossed={self.crossed == 1}, green={is_light_green}, spacing={vehicle_ahead_clear}"
+            #     )
 
             if should_move:
                 self.y += self.speed
                 movement_occurred = True
-                logger.debug(
-                    f"Vehicle {self.id} moved down to position ({self.x}, {self.y})"
-                )
+                # logger.debug(f"Vehicle {self.id} moved down to ({self.x:.1f}, {self.y:.1f})")
+
         elif self.direction == "left":
             if self.crossed == 0 and self.x < stopLines[self.direction]:
                 self.crossed = 1
-                logger.debug(f"Vehicle {self.id} crossed stop line in left direction")
+                # logger.debug(f"Vehicle {self.id} crossed stop line left")
 
-            should_move = (
-                self.x >= self.stop
-                or self.crossed == 1
-                or (currentGreen == 2 and currentYellow == 0)
-            ) and (
-                self.index == 0
-                or self.x
-                > (
-                    vehicles[self.direction][self.lane][self.index - 1].x
-                    + vehicles[self.direction][self.lane][self.index - 1]
-                    .image.get_rect()
-                    .width
-                    + movingGap
-                )
+            vehicle_ahead_clear = self.index == 0 or self.x > (
+                vehicles[self.direction][self.lane][self.index - 1].x
+                + vehicles[self.direction][self.lane][self.index - 1]
+                .image.get_rect()
+                .width
+                + movingGap
             )
 
-            if not should_move:
-                logger.debug(
-                    f"Vehicle {self.id} not moving left: stop={self.x >= self.stop}, "
-                    f"crossed={self.crossed == 1}, green={currentGreen == 2}, "
-                    f"spacing={self.index == 0 or self.x > (vehicles[self.direction][self.lane][self.index - 1].x + vehicles[self.direction][self.lane][self.index - 1].image.get_rect().width + movingGap)}"
-                )
+            should_move = (
+                self.x >= self.stop or self.crossed == 1 or is_light_green
+            ) and vehicle_ahead_clear
+
+            # if not should_move:
+            #     logger.debug(
+            #         f"Vehicle {self.id} stopped left: stop_dist={self.x >= self.stop}, "
+            #         f"crossed={self.crossed == 1}, green={is_light_green}, spacing={vehicle_ahead_clear}"
+            #     )
 
             if should_move:
                 self.x -= self.speed
                 movement_occurred = True
-                logger.debug(
-                    f"Vehicle {self.id} moved left to position ({self.x}, {self.y})"
-                )
+                # logger.debug(f"Vehicle {self.id} moved left to ({self.x:.1f}, {self.y:.1f})")
+
         elif self.direction == "up":
             if self.crossed == 0 and self.y < stopLines[self.direction]:
                 self.crossed = 1
-                logger.debug(f"Vehicle {self.id} crossed stop line in up direction")
+                # logger.debug(f"Vehicle {self.id} crossed stop line up")
 
-            should_move = (
-                self.y >= self.stop
-                or self.crossed == 1
-                or (currentGreen == 3 and currentYellow == 0)
-            ) and (
-                self.index == 0
-                or self.y
-                > (
-                    vehicles[self.direction][self.lane][self.index - 1].y
-                    + vehicles[self.direction][self.lane][self.index - 1]
-                    .image.get_rect()
-                    .height
-                    + movingGap
-                )
+            vehicle_ahead_clear = self.index == 0 or self.y > (
+                vehicles[self.direction][self.lane][self.index - 1].y
+                + vehicles[self.direction][self.lane][self.index - 1]
+                .image.get_rect()
+                .height
+                + movingGap
             )
 
-            if not should_move:
-                logger.debug(
-                    f"Vehicle {self.id} not moving up: stop={self.y >= self.stop}, "
-                    f"crossed={self.crossed == 1}, green={currentGreen == 3}, "
-                    f"spacing={self.index == 0 or self.y > (vehicles[self.direction][self.lane][self.index - 1].y + vehicles[self.direction][self.lane][self.index - 1].image.get_rect().height + movingGap)}"
-                )
+            should_move = (
+                self.y >= self.stop or self.crossed == 1 or is_light_green
+            ) and vehicle_ahead_clear
+
+            # if not should_move:
+            #     logger.debug(
+            #         f"Vehicle {self.id} stopped up: stop_dist={self.y >= self.stop}, "
+            #         f"crossed={self.crossed == 1}, green={is_light_green}, spacing={vehicle_ahead_clear}"
+            #     )
 
             if should_move:
                 self.y -= self.speed
                 movement_occurred = True
-                logger.debug(
-                    f"Vehicle {self.id} moved up to position ({self.x}, {self.y})"
-                )
+                # logger.debug(f"Vehicle {self.id} moved up to ({self.x:.1f}, {self.y:.1f})")
 
         # Update metrics for RL
         if not movement_occurred:
