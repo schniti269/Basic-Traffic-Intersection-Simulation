@@ -25,13 +25,127 @@ from utils import (
 )
 from traffic_signal import initialize
 from vehicle import generateVehicles
-from rl_environment import TrafficEnvironment
+from rl_environment import TrafficEnvironment, DEFAULT_SCAN_ZONE_CONFIG
+
+
+# Initialize the environment to access scan zone config
+env = TrafficEnvironment()
+
+
+# Function to print vehicle matrix for a given zone
+def print_vehicle_matrix(direction):
+    zone_name = direction.upper()
+
+    # Get scan zone configuration directly
+    scan_zone = DEFAULT_SCAN_ZONE_CONFIG[direction]
+    camera = scan_zone["camera"]
+    zone = scan_zone["zone"]
+
+    # Log that the matrix was requested
+    logger.info(f"Vehicle matrix for {zone_name} zone requested by user")
+
+    # Find all vehicles in the scan zone
+    vehicles_in_zone = []
+    vehicle_counts = {"car": 0, "bus": 0, "truck": 0, "bike": 0}
+
+    for d in directionNumbers.values():
+        for lane in range(3):
+            for vehicle in vehicles[d][lane]:
+                # Calculate vehicle dimensions
+                vehicle_width = vehicle.image.get_rect().width
+                vehicle_height = vehicle.image.get_rect().height
+
+                # Calculate vehicle corners
+                vehicle_left = vehicle.x
+                vehicle_right = vehicle.x + vehicle_width
+                vehicle_top = vehicle.y
+                vehicle_bottom = vehicle.y + vehicle_height
+
+                # Check if any part of the vehicle is in this scan zone
+                in_zone = not (
+                    vehicle_right < zone["x1"]
+                    or vehicle_left > zone["x2"]
+                    or vehicle_bottom < zone["y1"]
+                    or vehicle_top > zone["y2"]
+                )
+
+                # Calculate distance to camera (signed distance - can be negative if behind camera)
+                if direction == "right":
+                    # For right direction, we look left from the camera
+                    distance = vehicle_left - camera["x"]
+                elif direction == "left":
+                    # For left direction, we look right from the camera
+                    distance = camera["x"] - vehicle_right
+                elif direction == "down":
+                    # For down direction, we look up from the camera
+                    distance = camera["y"] - vehicle_bottom
+                else:  # up
+                    # For up direction, we look down from the camera
+                    distance = vehicle_top - camera["y"]
+
+                # Include all vehicles in the zone
+                if in_zone:
+                    vehicles_in_zone.append(
+                        {
+                            "vehicle": vehicle,
+                            "distance": abs(
+                                distance
+                            ),  # Use abs to show distance magnitude
+                            "speed": vehicle.speed,
+                            "type": vehicle.vehicleClass,
+                            "acceleration": (
+                                1
+                                if vehicle.accelerated
+                                else (-1 if vehicle.decelerated else 0)
+                            ),
+                            "position": (vehicle.x, vehicle.y),
+                        }
+                    )
+                    vehicle_counts[vehicle.vehicleClass] += 1
+
+    # Sort vehicles by distance
+    vehicles_in_zone.sort(key=lambda x: x["distance"])
+
+    # Clear visual space before printing
+    print("\n\n")
+    print("*" * 70)
+    print(f"{'*' * 5} VEHICLE MATRIX FOR ZONE: {zone_name} {'*' * 5}")
+    print("*" * 70)
+
+    # Print summary information
+    print(f"• Total vehicles in zone: {len(vehicles_in_zone)}")
+    print(
+        f"• Vehicle types: Cars: {vehicle_counts['car']}, Buses: {vehicle_counts['bus']}, "
+        + f"Trucks: {vehicle_counts['truck']}, Bikes: {vehicle_counts['bike']}"
+    )
+    print(
+        f"• Zone coordinates: ({zone['x1']}, {zone['y1']}) to ({zone['x2']}, {zone['y2']})"
+    )
+    print(f"• Camera position: ({camera['x']}, {camera['y']})")
+
+    # Print vehicle information sorted by distance
+    if len(vehicles_in_zone) > 0:
+        print("\nVEHICLES BY DISTANCE TO CAMERA:")
+        print(f"{'#':<4} {'Type':<10} {'Distance':<10} {'Speed':<10} {'Waiting':<10}")
+        print("-" * 55)
+
+        for i, vehicle_data in enumerate(vehicles_in_zone, 1):
+            v = vehicle_data["vehicle"]
+            print(
+                f"{i:<4} {vehicle_data['type']:<10} {vehicle_data['distance']:<10.1f} "
+                + f"{vehicle_data['speed']:<10.1f} {v.waiting_time:<10.1f}"
+            )
+    else:
+        print("\nNo vehicles detected in this zone.")
+
+    # Clear visual space after printing
+    print("\n" + "*" * 70 + "\n")
 
 
 # Main simulation class for visualization
 class Main:
     # Create RL environment
-    env = TrafficEnvironment()
+    env = env  # Use the already initialized environment
 
     thread1 = threading.Thread(name="initialization", target=initialize, args=())
     thread1.daemon = True
@@ -101,6 +215,22 @@ class Main:
                 logger.info("Simulation terminated by user")
                 running = False  # Set flag to false to exit loop
                 # sys.exit() # Avoid sys.exit() for cleaner shutdown if possible
+            elif event.type == pygame.KEYDOWN:
+                # Toggle coordinate display with 'C' key
+                if event.key == pygame.K_c:
+                    env.show_coordinates = not env.show_coordinates
+                    logger.info(
+                        f"Coordinate display {'enabled' if env.show_coordinates else 'disabled'}"
+                    )
+                # Print vehicle matrix for specific zones (1-4 keys)
+                elif event.key == pygame.K_1:
+                    print_vehicle_matrix("right")
+                elif event.key == pygame.K_2:
+                    print_vehicle_matrix("down")
+                elif event.key == pygame.K_3:
+                    print_vehicle_matrix("left")
+                elif event.key == pygame.K_4:
+                    print_vehicle_matrix("up")
 
         # --- RL Step ---
         if not MANUAL_CONTROL:
@@ -202,6 +332,16 @@ class Main:
                 for i, text in enumerate(metrics_text):
                     text_surface = font.render(text, True, white, black)
                     screen.blit(text_surface, (10, 10 + i * 30))
+
+            # Add key instruction text
+            instruction_text = (
+                "Press keys 1-4 to print vehicle matrices for each zone in the console"
+            )
+            instruction_surface = font.render(instruction_text, True, white, black)
+            screen.blit(instruction_surface, (500, 10))
+
+            # Visualize scan zones
+            env.visualize_scan_zone(screen)
 
             # Display signals and timers if rendering
             for i in range(0, noOfSignals):
@@ -309,11 +449,31 @@ class Main:
             default_stop_text = stop_line_font.render("Default Stop", True, white)
             screen.blit(default_stop_text, (520, defaultStop["up"] - 20))
 
-            # display the vehicles if rendering
+            # Render vehicles
             for vehicle in simulation:
-                vehicle.render(
-                    screen
-                )  # Use the vehicle's render method which includes waiting time display
+                vehicle.render(screen)
+
+            # Display zone key mapping indicators
+            zone_font = pygame.font.Font(None, 24)
+            zone_mappings = [
+                ("1: RIGHT ZONE", (1200, 350)),
+                ("2: DOWN ZONE", (780, 700)),
+                ("3: LEFT ZONE", (200, 430)),
+                ("4: UP ZONE", (640, 100)),
+            ]
+
+            for text, pos in zone_mappings:
+                # Create background for better visibility
+                text_surface = zone_font.render(text, True, white)
+                text_width, text_height = text_surface.get_size()
+                bg_rect = pygame.Rect(
+                    pos[0] - 5, pos[1] - 5, text_width + 10, text_height + 10
+                )
+                pygame.draw.rect(screen, black, bg_rect)
+                pygame.draw.rect(screen, orange, bg_rect, 2)
+
+                # Draw zone text
+                screen.blit(text_surface, pos)
 
             pygame.display.update()
         # --- End Rendering Section ---

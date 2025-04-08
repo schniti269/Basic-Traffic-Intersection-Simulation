@@ -8,21 +8,34 @@ from collections import deque
 import logging
 import os
 from datetime import datetime
+from enum import Enum
 
-# Set up logging
-log_dir = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
+# Create logs directory if not exists
+os.makedirs("logs", exist_ok=True)
 
-log_file = os.path.join(
-    log_dir, f"traffic_simulation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
-)
+# Configure logging
 logger = logging.getLogger("TrafficSimulation")
+logger.setLevel(logging.INFO)  # Use INFO level to reduce console output
+
+# Add file handler
+timestamp = time.strftime("%Y%m%d-%H%M%S")
+file_handler = logging.FileHandler(f"logs/traffic_sim_{timestamp}.log")
+file_handler.setLevel(logging.DEBUG)  # Keep DEBUG level for file logging
+
+# Add console handler with reduced verbosity
+console_handler = logging.StreamHandler()
+console_handler.setLevel(
+    logging.WARNING
+)  # Further reduce to WARNING to minimize output
+
+# Create formatter and add it to the handlers
+formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(formatter)
+console_handler.setFormatter(formatter)
+
+# Add the handlers to the logger
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 # Enable/Disable rendering
 ENABLE_RENDERING = True  # Set to True to see the visualization
