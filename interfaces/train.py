@@ -1,4 +1,3 @@
-import pygame
 import sys
 import threading
 import os
@@ -9,26 +8,19 @@ import tensorflow as tf
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from shared.utils import (
     logger,
-    # ENABLE_RENDERING, # No longer needed directly, controller handles rendering flag
-    # SHOW_FINAL_EPOCH_ONLY, # No longer needed directly
-    # MAX_EPISODES, # Not used
-    # MANUAL_CONTROL, # Not used
     directionNumbers,
     waiting_times,
-    # crashes, # Calculated per step
-    # signals, # Handled by controller/rendering
     noOfSignals,
-    # currentGreen, # Handled by controller
-    # currentYellow, # Handled by controller
-    # signalCoods, # Rendering specific
-    # signalTimerCoods, # Rendering specific
-    # emission_counts, # Calculated per step
     simulation,
     vehicles,
     stopLines,
     movingGap,
     defaultStop,
     PERFORMANCE_MODE,
+    # Import assumed screen dimensions or define them here
+    # Assuming based on max coordinates in shared/utils.py
+    # screenWidth, # Uncomment if defined in utils
+    # screenHeight, # Uncomment if defined in utils
 )
 from core.simulation.traffic_signal import initialize
 from core.simulation.vehicle import generateVehicles
@@ -38,10 +30,16 @@ from core.agent.neural_model_01 import (
     DEFAULT_SCAN_ZONE_CONFIG,
 )
 
+# --- Screen Dimensions (Assumed) ---
+# Define here if not imported from utils
+screenWidth = 1400
+screenHeight = 800
+# --- End Screen Dimensions ---
+
 # --- Training Configuration ---
 MODEL_SAVE_DIR = "saved_models"
 STEPS_PER_EPOCH = 10000
-TOTAL_EPOCHS = 5
+TOTAL_EPOCHS = 50
 # --- End Configuration ---
 
 
@@ -91,29 +89,9 @@ def train_simulation():
     thread2.start()
     logger.info("Vehicle generation thread started")
 
-    # --- Pygame Initialization (Minimal for Headless) ---
-    # We need pygame initialized for Clock and event checking, even if no display
-    # Avoid initializing full display unless rendering is triggered
-    pygame.init()
-    pygame.font.init()  # Needed for potential debug text even if no screen
-    pygame.display.init()  # Initialize the display system unconditionally
-    clock = pygame.time.Clock()
-    screenWidth = 1400  # Still needed for off-screen checks
-    screenHeight = 800
-    screenSize = (screenWidth, screenHeight)
-    # Variables for potential rendering if triggered
-    screen = None
-    background = None
-    redSignal = None
-    yellowSignal = None
-    greenSignal = None
-    font = None
-    # --- End Pygame Init ---
-
     total_steps = 0
     running = True
     active_lights = [False] * noOfSignals  # Initial light state
-    should_render = neural_controller.should_render()  # Initial render check
 
     # Main simulation loop with tqdm progress bar
     total_simulation_steps = TOTAL_EPOCHS * STEPS_PER_EPOCH
@@ -129,21 +107,6 @@ def train_simulation():
 
     while running and total_steps < total_simulation_steps:
         current_epoch = neural_controller.current_epoch
-
-        # --- Minimal Event Handling (Needed for QUIT and SPACE) --- #
-        # Poll events always, but only process space if waiting
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                logger.info("Training terminated by user")
-                running = False
-                break  # Exit event loop
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE and neural_controller.waiting_for_space:
-                    if neural_controller.check_for_space():
-                        should_render = neural_controller.should_render()
-        if not running:
-            break  # Exit main loop
-        # --- End Event Handling --- #
 
         # --- Calculate Step Metrics --- #
         waiting_vehicles_this_step = 0
@@ -174,7 +137,7 @@ def train_simulation():
             # Remove the initial skip check for crashed vehicles
             # if vehicle.crashed:
             #     continue
-            old_x, old_y = vehicle.x, vehicle.y  # Store pos before move
+            # old_x, old_y = vehicle.x, vehicle.y  # Store pos before move
             # Initialize crashes_result for this vehicle iteration
             crashes_result = 0
             # Only call move if the vehicle is not already crashed from a previous iteration
@@ -186,7 +149,7 @@ def train_simulation():
                     crashes_result  # Accumulate crashes detected by move
                 )
 
-            # Off-screen check
+            # Off-screen check - Use defined dimensions
             off_screen = (
                 (vehicle.direction == "right" and vehicle.x > screenWidth)
                 or (vehicle.direction == "left" and vehicle.x + vehicle.width < 0)
@@ -194,6 +157,7 @@ def train_simulation():
                 or (vehicle.direction == "up" and vehicle.y + vehicle.height < 0)
             )
             # Check for removal *after* potential move/crash flag update
+            # Update logic to remove if crashed OR off_screen
             if vehicle.crashed or off_screen:
                 vehicles_to_remove.append(vehicle)
 
@@ -236,100 +200,7 @@ def train_simulation():
 
             # Now end the epoch (trains model, resets metrics)
             neural_controller.end_epoch()
-
-            # Update rendering flag and manage pygame display
-            should_render = neural_controller.should_render()
-            if should_render and screen is None:
-                logger.info("Initializing Pygame display for rendering...")
-                # Load resources needed for rendering
-                try:
-                    background = pygame.image.load(
-                        "images/intersection.png"
-                    )  # Corrected path
-                    screen = pygame.display.set_mode(screenSize)
-                    pygame.display.set_caption("TRAFFIC SIMULATION - TRAINING VIS")
-                    redSignal = pygame.image.load("../images/signals/red.png")
-                    yellowSignal = pygame.image.load("../images/signals/yellow.png")
-                    greenSignal = pygame.image.load("../images/signals/green.png")
-                    font = pygame.font.Font(None, 30)
-                    # Force vehicles to load images
-                    for v in simulation:
-                        v.load_image_if_needed()
-                except Exception as e:
-                    logger.error(f"Error initializing Pygame rendering resources: {e}")
-                    should_render = False  # Fallback to headless if resources fail
-                    pygame.display.quit()
-                    pygame.font.quit()
-                    pygame.display.init()  # Re-init display for headless operation
-                    pygame.font.init()
-            elif not should_render and screen is not None:  # Check screen is not None
-                logger.info("Quitting Pygame display for headless mode...")
-                pygame.display.quit()
-                pygame.display.init()  # Keep display initialized for events/image loading
-                screen = None  # Reset screen variable
         # --- End Training Epoch Check --- #
-
-        # --- Rendering Section --- #
-        if should_render and pygame.display.get_init() and screen is not None:
-            try:
-                screen.blit(background, (0, 0))
-                # ... (rest of rendering logic similar to run_model.py) ...
-                # Display neural metrics
-                metrics_text = [
-                    f"Epoch: {neural_controller.current_epoch}",
-                    f"Steps: {total_steps} (Epoch Step: {neural_controller.epoch_steps})",
-                    f"Current Epoch Reward: {neural_controller.epoch_accumulated_reward:.2f}",
-                    f"Crashes (Epoch): {neural_controller.total_crashes_epoch}",
-                    f"Waiting Now: {waiting_vehicles_this_step}",
-                    f"Emissions Now: {emissions_this_step:.2f}",
-                ]
-                # Add more metrics if needed
-                if font:
-                    for i, text in enumerate(metrics_text):
-                        text_surface = font.render(
-                            text, True, (255, 255, 255), (0, 0, 0)
-                        )
-                        screen.blit(text_surface, (10, 10 + i * 30))
-                else:
-                    logger.warning("Font not loaded for rendering metrics.")
-
-                # Display signals
-                for i in range(0, noOfSignals):
-                    sig_img = redSignal if not active_lights[i] else greenSignal
-                    if sig_img:
-                        screen.blit(sig_img, signalCoods[i])
-                    # Add text ON/OFF if font loaded
-                    if font:
-                        signal_text = "ON" if active_lights[i] else "OFF"
-                        sig_text_surf = font.render(
-                            signal_text, True, (255, 255, 255), (0, 0, 0)
-                        )
-                        screen.blit(sig_text_surf, signalTimerCoods[i])
-
-                # Render vehicles
-                for vehicle in simulation:
-                    vehicle.render(screen)
-
-                # Visualize scan zones if env available
-                if "env" in locals() and hasattr(env, "visualize_scan_zone"):
-                    env.visualize_scan_zone(screen)
-
-                # Space prompt
-                if neural_controller.waiting_for_space and font:
-                    space_text = "Press SPACE to continue training"
-                    space_surface = font.render(
-                        space_text, True, (255, 255, 255), (0, 0, 0)
-                    )
-                    screen.blit(space_surface, (500, 40))
-
-                pygame.display.update()
-                clock.tick(60)  # Limit speed when rendering
-            except Exception as e:
-                logger.error(f"Error during rendering: {e}")
-                # Optionally disable rendering for future steps if errors persist
-                # should_render = False
-                # if pygame.display.get_init(): pygame.display.quit()
-        # --- End Rendering Section --- #
 
         # Use the action determined in the *previous* controller update for the *current* simulation step
         active_lights = next_active_lights
@@ -343,7 +214,6 @@ def train_simulation():
     if pbar:
         pbar.close()
 
-    pygame.quit()  # Quit pygame fully at the end
     logger.info("Training finished.")
 
     # Save the final model
@@ -362,5 +232,4 @@ if __name__ == "__main__":
     except Exception as e:
         logger.exception(f"An error occurred during training: {e}")
     finally:
-        pygame.quit()  # Ensure Pygame quits cleanly
         sys.exit()  # Ensure script exits
