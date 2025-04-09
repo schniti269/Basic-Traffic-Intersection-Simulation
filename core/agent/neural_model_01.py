@@ -245,7 +245,7 @@ class NeuralTrafficController:
         speed_reward_weight = 0.5
         waiting_penalty_weight = -0.2
         emission_penalty_weight = -0.01
-        crash_penalty = -100.0  # Large penalty per crash
+        crash_penalty = +100.0  # Large penalty per crash
 
         reward = 0.0
 
@@ -581,43 +581,57 @@ def get_vehicles_in_zones(direction_numbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG)
     Returns:
     - List of 4 lists containing vehicle data for each zone
     """
-    # Debug info has been removed to prevent console spam
-
     zone_directions = ["right", "down", "left", "up"]
     all_zone_vehicles = []
 
+    # Define fallback dimensions and distance calculation logic using dictionaries
+    fallback_dimensions = {
+        "car": (40, 40),
+        "bus": (60, 60),
+        "truck": (60, 60),
+        "bike": (20, 20),
+    }
+    default_dims = (40, 40)  # Default if type not found
+
+    distance_calculators = {
+        "right": lambda v, cam: v.x - cam["x"],
+        "left": lambda v, cam: cam["x"]
+        - (
+            v.x + v.image.get_rect().width
+            if hasattr(v, "image") and v.image
+            else v.x + fallback_dimensions.get(v.vehicleClass, default_dims)[0]
+        ),
+        "down": lambda v, cam: cam["y"]
+        - (
+            v.y + v.image.get_rect().height
+            if hasattr(v, "image") and v.image
+            else v.y + fallback_dimensions.get(v.vehicleClass, default_dims)[1]
+        ),
+        "up": lambda v, cam: v.y - cam["y"],
+    }
+
     for direction in zone_directions:
-        # Get scan zone configuration
         scan_zone = DEFAULT_SCAN_ZONE_CONFIG[direction]
         camera = scan_zone["camera"]
         zone = scan_zone["zone"]
-
-        # Find all vehicles in the scan zone
         vehicles_in_zone = []
+        calculate_distance = distance_calculators[direction]  # Get the correct lambda
 
         for d in direction_numbers.values():
             for lane in range(3):
                 for vehicle in vehicles[d][lane]:
                     try:
-                        # Get vehicle coordinates
                         vehicle_left = vehicle.x
                         vehicle_top = vehicle.y
 
-                        # Get dimensions using image.get_rect() as in the Vehicle class
+                        # Get dimensions: Use image rect if available, else use fallback dict
                         if hasattr(vehicle, "image") and vehicle.image is not None:
                             vehicle_width = vehicle.image.get_rect().width
                             vehicle_height = vehicle.image.get_rect().height
                         else:
-                            # Fallback dimensions based on vehicle type
-                            if vehicle.vehicleClass == "car":
-                                vehicle_width = vehicle_height = 40
-                            elif (
-                                vehicle.vehicleClass == "bus"
-                                or vehicle.vehicleClass == "truck"
-                            ):
-                                vehicle_width = vehicle_height = 60
-                            else:  # bike
-                                vehicle_width = vehicle_height = 20
+                            vehicle_width, vehicle_height = fallback_dimensions.get(
+                                vehicle.vehicleClass, default_dims
+                            )
 
                         vehicle_right = vehicle_left + vehicle_width
                         vehicle_bottom = vehicle_top + vehicle_height
@@ -630,15 +644,8 @@ def get_vehicles_in_zones(direction_numbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG)
                             or vehicle_top > zone["y2"]
                         )
 
-                        # Calculate distance to camera
-                        if direction == "right":
-                            distance = vehicle_left - camera["x"]
-                        elif direction == "left":
-                            distance = camera["x"] - vehicle_right
-                        elif direction == "down":
-                            distance = camera["y"] - vehicle_bottom
-                        else:  # up
-                            distance = vehicle_top - camera["y"]
+                        # Calculate distance using the appropriate function from the dictionary
+                        distance = calculate_distance(vehicle, camera)
 
                         # Include all vehicles in the zone
                         if in_zone:
@@ -658,6 +665,8 @@ def get_vehicles_in_zones(direction_numbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG)
                             )
                     except Exception as e:
                         # Skip this vehicle if any error occurs without printing
+                        # Consider logging the error here if debugging is needed:
+                        # logger.warning(f"Skipping vehicle due to error in zone calculation: {e}")
                         continue
 
         all_zone_vehicles.append(vehicles_in_zone)

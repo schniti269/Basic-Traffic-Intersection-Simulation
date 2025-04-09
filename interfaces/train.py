@@ -2,7 +2,6 @@ import sys
 import threading
 import os
 from tqdm import tqdm
-import sys
 import tensorflow as tf
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -17,10 +16,8 @@ from shared.utils import (
     movingGap,
     defaultStop,
     PERFORMANCE_MODE,
-    # Import assumed screen dimensions or define them here
-    # Assuming based on max coordinates in shared/utils.py
-    # screenWidth, # Uncomment if defined in utils
-    # screenHeight, # Uncomment if defined in utils
+    # screenWidth, # Assuming these are defined below for now
+    # screenHeight, # Assuming these are defined below for now
 )
 from core.simulation.traffic_signal import initialize
 from core.simulation.vehicle import generateVehicles
@@ -30,27 +27,22 @@ from core.agent.neural_model_01 import (
     DEFAULT_SCAN_ZONE_CONFIG,
 )
 
-# --- Screen Dimensions (Assumed) ---
-# Define here if not imported from utils
-screenWidth = 1400
-screenHeight = 800
-# --- End Screen Dimensions ---
-
-# --- Training Configuration ---
+# --- Configuration --- #
 MODEL_SAVE_DIR = "saved_models"
 STEPS_PER_EPOCH = 10000
 TOTAL_EPOCHS = 50
-# --- End Configuration ---
+SCREEN_WIDTH = 1400  # Define screen dimensions clearly
+SCREEN_HEIGHT = 800
+# --- End Configuration --- #
 
 
 def train_simulation():
     """Runs the traffic simulation training loop."""
 
-    # --- GPU Check ---
+    # --- GPU Check --- #
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
         try:
-            # Currently, memory growth needs to be the same across GPUs
             for gpu in gpus:
                 tf.config.experimental.set_memory_growth(gpu, True)
             logical_gpus = tf.config.list_logical_devices("GPU")
@@ -58,30 +50,24 @@ def train_simulation():
                 f"{len(gpus)} Physical GPUs, {len(logical_gpus)} Logical GPUs found and configured."
             )
         except RuntimeError as e:
-            # Memory growth must be set before GPUs have been initialized
             logger.error(f"GPU Memory Growth Error: {e}")
     else:
         logger.info("No GPU found, using CPU.")
-    # --- End GPU Check ---
+    # --- End GPU Check --- #
 
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     logger.info(f"Starting training for {TOTAL_EPOCHS} epochs...")
 
-    # Initialize environment (needed for scan zone config access during training)
-    # env = TrafficEnvironment()
-
-    # Create neural network controller
     neural_controller = NeuralTrafficController(
         steps_per_epoch=STEPS_PER_EPOCH, total_epochs=TOTAL_EPOCHS
     )
 
-    # Start background threads (simulation init, vehicle generation)
+    # Start background threads
     thread1 = threading.Thread(name="initialization", target=initialize, args=())
     thread1.daemon = True
     thread1.start()
     logger.info("Initialization thread started")
 
-    # Start vehicle generation thread
     thread2 = threading.Thread(
         name="generateVehicles", target=generateVehicles, args=()
     )
@@ -93,126 +79,120 @@ def train_simulation():
     running = True
     active_lights = [False] * noOfSignals  # Initial light state
 
-    # Main simulation loop with tqdm progress bar
     total_simulation_steps = TOTAL_EPOCHS * STEPS_PER_EPOCH
-    if PERFORMANCE_MODE:
-        pbar = tqdm(
-            total=total_simulation_steps,
-            desc="Training Progress",
-            unit="step",
-            mininterval=1.0,
-        )
-    else:
-        pbar = None
+    pbar = tqdm(
+        total=total_simulation_steps,
+        desc="Training Progress",
+        unit="step",
+        mininterval=1.0,
+        disable=not PERFORMANCE_MODE,  # Disable tqdm if not in performance mode
+    )
 
     while running and total_steps < total_simulation_steps:
         current_epoch = neural_controller.current_epoch
 
-        # --- Calculate Step Metrics --- #
+        # --- Calculate Step Metrics (Refactored) --- #
+        # Calculate metrics *before* the move step for the current state
         waiting_vehicles_this_step = 0
-        avg_speed = 0
+        sum_speed = 0
         vehicle_count = 0
         emissions_this_step = 0
 
-        for d in directionNumbers.values():
-            for lane in range(3):
-                for vehicle in vehicles[d][lane]:
-                    if vehicle.waiting_time > 0:
-                        waiting_vehicles_this_step += 1
-                    avg_speed += vehicle.speed
-                    vehicle_count += 1
-
-        if vehicle_count > 0:
-            avg_speed /= vehicle_count
-
+        # Single loop over the simulation group to gather metrics
         for vehicle in simulation:
-            emissions_this_step += vehicle.update_emission()
+            # Check waiting status
+            if not vehicle.crashed and vehicle.waiting_time > 0:
+                waiting_vehicles_this_step += 1
 
-        crashes_this_step = 0
+            # Sum speed for average calculation
+            sum_speed += vehicle.speed
+            vehicle_count += 1
+
+            # Calculate instantaneous emission for this step using vehicle's method
+            # Note: vehicle.move also accumulates vehicle.emission, which might be redundant.
+            # We use update_emission here as it likely represents the intended per-step value for reward.
+            if not vehicle.crashed:
+                emissions_this_step += vehicle.update_emission()
+
+        # Calculate average speed
+        avg_speed = sum_speed / vehicle_count if vehicle_count > 0 else 0
+
         # --- End Metric Calculation --- #
 
         # --- Simulation Update (Movement & Cleanup) --- #
+        crashes_this_step = 0  # Reset crash count for the step
         vehicles_to_remove = []
-        for vehicle in list(simulation):
-            # Remove the initial skip check for crashed vehicles
-            # if vehicle.crashed:
-            #     continue
-            # old_x, old_y = vehicle.x, vehicle.y  # Store pos before move
-            # Initialize crashes_result for this vehicle iteration
+        for vehicle in list(simulation):  # Iterate over a copy for safe removal
             crashes_result = 0
-            # Only call move if the vehicle is not already crashed from a previous iteration
             if not vehicle.crashed:
                 crashes_result = vehicle.move(
                     vehicles, active_lights, stopLines, movingGap, simulation
                 )
-                crashes_this_step += (
-                    crashes_result  # Accumulate crashes detected by move
-                )
+                crashes_this_step += crashes_result
 
-            # Off-screen check - Use defined dimensions
+            # Off-screen check - Use configured dimensions
             off_screen = (
-                (vehicle.direction == "right" and vehicle.x > screenWidth)
+                (vehicle.direction == "right" and vehicle.x > SCREEN_WIDTH)
                 or (vehicle.direction == "left" and vehicle.x + vehicle.width < 0)
-                or (vehicle.direction == "down" and vehicle.y > screenHeight)
+                or (vehicle.direction == "down" and vehicle.y > SCREEN_HEIGHT)
                 or (vehicle.direction == "up" and vehicle.y + vehicle.height < 0)
             )
-            # Check for removal *after* potential move/crash flag update
-            # Update logic to remove if crashed OR off_screen
+
+            # Mark for removal if crashed OR off_screen
             if vehicle.crashed or off_screen:
                 vehicles_to_remove.append(vehicle)
 
+        # Second pass: Remove marked vehicles safely
         for vehicle in vehicles_to_remove:
             simulation.remove(vehicle)
             try:
+                # Remove from the main vehicles dictionary
                 vehicles[vehicle.direction][vehicle.lane].remove(vehicle)
+                # Clean up waiting time entry if it exists
                 if vehicle.id in waiting_times[vehicle.direction]:
                     del waiting_times[vehicle.direction][vehicle.id]
             except (ValueError, KeyError) as e:
+                # Log warning but continue if removal fails (vehicle might already be gone)
                 logger.warning(
-                    f"Failed to remove vehicle {getattr(vehicle, 'id', '?')} from dict/waiting_times: {e}"
+                    f"Failed to remove vehicle {getattr(vehicle, 'id', '?')} from structure: {e}"
                 )
                 pass
         # --- End Simulation Update --- #
 
         # --- Neural Controller Update --- #
+        # Get state based on vehicles *after* movement and removal
         scan_zones = get_vehicles_in_zones(
             directionNumbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG
         )
-        # Controller update gives the action for the *next* step
+        # Controller update gets action for the *next* step based on current state & reward
         next_active_lights = neural_controller.update(
             scan_zones,
-            avg_speed,
-            crashes_this_step,
-            waiting_vehicles_this_step,
-            emissions_this_step,
-            vehicle_count,
+            avg_speed,  # Avg speed from *before* move
+            crashes_this_step,  # Crashes that happened *during* move
+            waiting_vehicles_this_step,  # Waiting vehicles *before* move
+            emissions_this_step,  # Emissions calculated *before* move
+            vehicle_count,  # Vehicle count *before* move
         )
         # --- End Neural Controller Update --- #
 
         # --- Training Epoch Check & Model Saving --- #
         if neural_controller.epoch_steps >= neural_controller.steps_per_epoch:
-            # Save model *before* end_epoch resets metrics used for filename
             epoch_reward = neural_controller.epoch_accumulated_reward
             epoch_crashes = neural_controller.total_crashes_epoch
             save_filename = f"model_epoch_{current_epoch}_reward_{epoch_reward:.0f}_crashes_{epoch_crashes}.weights.h5"
             save_path = os.path.join(MODEL_SAVE_DIR, save_filename)
             neural_controller.save_model(save_path)
-
-            # Now end the epoch (trains model, resets metrics)
-            neural_controller.end_epoch()
+            neural_controller.end_epoch()  # Trains model, resets metrics
         # --- End Training Epoch Check --- #
 
-        # Use the action determined in the *previous* controller update for the *current* simulation step
+        # Apply the determined action for the next simulation step
         active_lights = next_active_lights
 
-        # Update total steps and progress bar
         total_steps += 1
-        if pbar:
-            pbar.update(1)
+        pbar.update(1)
 
     # --- End of Training Loop --- #
-    if pbar:
-        pbar.close()
+    pbar.close()
 
     logger.info("Training finished.")
 

@@ -77,36 +77,53 @@ class Vehicle(pygame.sprite.Sprite):
                 self.image = None  # Ensure image is None if loading failed
                 self.font = None
 
-        # Calculate stop coordinate based on vehicle ahead or default
+        # --- Refactored stop coordinate calculation ---
+        stop_calculators = {
+            "right": lambda ahead: ahead.stop - ahead.width - stoppingGap,
+            "left": lambda ahead: ahead.stop + ahead.width + stoppingGap,
+            "down": lambda ahead: ahead.stop - ahead.height - stoppingGap,
+            "up": lambda ahead: ahead.stop + ahead.height + stoppingGap,
+        }
         if (
-            len(vehicles[direction][lane]) > 1
+            self.index > 0  # Check if index is valid before accessing
             and vehicles[direction][lane][self.index - 1].crossed == 0
         ):
             vehicle_ahead = vehicles[direction][lane][self.index - 1]
-            if direction == "right":
-                self.stop = vehicle_ahead.stop - vehicle_ahead.width - stoppingGap
-            elif direction == "left":
-                self.stop = vehicle_ahead.stop + vehicle_ahead.width + stoppingGap
-            elif direction == "down":
-                self.stop = vehicle_ahead.stop - vehicle_ahead.height - stoppingGap
-            elif direction == "up":
-                self.stop = vehicle_ahead.stop + vehicle_ahead.height + stoppingGap
+            calculate_stop = stop_calculators.get(direction)
+            if calculate_stop:
+                self.stop = calculate_stop(vehicle_ahead)
+            else:
+                self.stop = defaultStop[direction]  # Fallback
         else:
             self.stop = defaultStop[direction]
+        # --- End Refactor ---
 
-        # Adjust starting positions for new vehicles
-        if direction == "right":
-            temp = self.width + stoppingGap
-            x[direction][lane] -= temp
-        elif direction == "left":
-            temp = self.width + stoppingGap
-            x[direction][lane] += temp
-        elif direction == "down":
-            temp = self.height + stoppingGap
-            y[direction][lane] -= temp
-        elif direction == "up":
-            temp = self.height + stoppingGap
-            y[direction][lane] += temp
+        # --- Refactored starting position adjustment ---
+        start_pos_adjusters = {
+            "right": lambda: (
+                x[direction][lane] - (self.width + stoppingGap),
+                y[direction][lane],
+            ),
+            "left": lambda: (
+                x[direction][lane] + (self.width + stoppingGap),
+                y[direction][lane],
+            ),
+            "down": lambda: (
+                x[direction][lane],
+                y[direction][lane] - (self.height + stoppingGap),
+            ),
+            "up": lambda: (
+                x[direction][lane],
+                y[direction][lane] + (self.height + stoppingGap),
+            ),
+        }
+        adjuster = start_pos_adjusters.get(direction)
+        if adjuster:
+            # Note: This modifies the global 'x' and 'y' dictionaries directly,
+            # which might have side effects depending on how they are used elsewhere.
+            # Consider if a local adjustment or returning the adjusted value is safer.
+            x[direction][lane], y[direction][lane] = adjuster()
+        # --- End Refactor ---
 
         simulation.add(self)
 
@@ -198,6 +215,7 @@ class Vehicle(pygame.sprite.Sprite):
         """
         Move the vehicle based on traffic signals, other vehicles, and turning.
         Checks for collisions before finalizing movement.
+        Refactored to use dictionaries for direction logic.
 
         Args:
             vehicles (dict): Dictionary containing all vehicles, keyed by direction and lane.
@@ -210,20 +228,18 @@ class Vehicle(pygame.sprite.Sprite):
             int: 1 if a new crash occurred involving this vehicle this step, 0 otherwise.
         """
         crashed_this_step = 0
-        old_x = self.x
-        old_y = self.y
+        old_x, old_y = self.x, self.y
         movement_occurred = False
-        should_move = False
-        potential_x = self.x
-        potential_y = self.y
+        potential_x, potential_y = self.x, self.y
 
-        # --- Determine if vehicle *wants* to move (based on lights, vehicle ahead) ---
+        # --- Determine Light Status ---
         direction_to_light_index = {"right": 0, "down": 1, "left": 2, "up": 3}
         my_light_index = direction_to_light_index.get(self.direction)
         is_light_green = False
         if my_light_index is not None and my_light_index < len(active_lights):
             is_light_green = active_lights[my_light_index]
 
+        # --- Get Current Lane and Index ---
         current_lane_vehicles = vehicles[self.direction][self.lane]
         try:
             current_index = current_lane_vehicles.index(self)
@@ -233,91 +249,98 @@ class Vehicle(pygame.sprite.Sprite):
             )
             return 0
 
-        if self.direction == "right":
-            if self.crossed == 0 and self.x + self.width > stopLines[self.direction]:
-                self.crossed = 1
-            vehicle_ahead_clear = current_index == 0 or self.x + self.width < (
-                current_lane_vehicles[current_index - 1].x - movingGap
-            )
-            should_move = (
-                self.x + self.width <= self.stop or self.crossed == 1 or is_light_green
-            ) and vehicle_ahead_clear
-            if should_move:
-                potential_x += self.speed
+        # --- Refactored Movement Logic ---
+        def get_move_params(direction, index, current_vehicles):
+            vehicle_ahead = current_vehicles[index - 1] if index > 0 else None
+            crossed_check = lambda v: False  # Default
+            clearance_check = lambda v, ahead: True  # Default if no vehicle ahead
+            stop_condition = lambda v: False  # Default
 
-        elif self.direction == "down":
-            if self.crossed == 0 and self.y + self.height > stopLines[self.direction]:
-                self.crossed = 1
-            vehicle_ahead_clear = current_index == 0 or self.y + self.height < (
-                current_lane_vehicles[current_index - 1].y - movingGap
-            )
-            should_move = (
-                self.y + self.height <= self.stop or self.crossed == 1 or is_light_green
-            ) and vehicle_ahead_clear
-            if should_move:
-                potential_y += self.speed
+            if direction == "right":
+                crossed_check = lambda v: v.x + v.width > stopLines[direction]
+                if vehicle_ahead:
+                    clearance_check = lambda v, ahead: v.x + v.width < (
+                        ahead.x - movingGap
+                    )
+                stop_condition = lambda v: v.x + v.width <= v.stop
+                potential_update = lambda v: (v.x + v.speed, v.y)
+            elif direction == "down":
+                crossed_check = lambda v: v.y + v.height > stopLines[direction]
+                if vehicle_ahead:
+                    clearance_check = lambda v, ahead: v.y + v.height < (
+                        ahead.y - movingGap
+                    )
+                stop_condition = lambda v: v.y + v.height <= v.stop
+                potential_update = lambda v: (v.x, v.y + v.speed)
+            elif direction == "left":
+                crossed_check = lambda v: v.x < stopLines[direction]
+                if vehicle_ahead:
+                    clearance_check = lambda v, ahead: v.x > (
+                        ahead.x + ahead.width + movingGap
+                    )
+                stop_condition = lambda v: v.x >= v.stop
+                potential_update = lambda v: (v.x - v.speed, v.y)
+            elif direction == "up":
+                crossed_check = lambda v: v.y < stopLines[direction]
+                if vehicle_ahead:
+                    clearance_check = lambda v, ahead: v.y > (
+                        ahead.y + ahead.height + movingGap
+                    )
+                stop_condition = lambda v: v.y >= v.stop
+                potential_update = lambda v: (v.x, v.y - v.speed)
 
-        elif self.direction == "left":
-            if self.crossed == 0 and self.x < stopLines[self.direction]:
-                self.crossed = 1
-            vehicle_ahead_clear = current_index == 0 or self.x > (
-                current_lane_vehicles[current_index - 1].x
-                + current_lane_vehicles[current_index - 1].width
-                + movingGap
+            return (
+                crossed_check,
+                clearance_check,
+                stop_condition,
+                potential_update,
+                vehicle_ahead,
             )
-            should_move = (
-                self.x >= self.stop or self.crossed == 1 or is_light_green
-            ) and vehicle_ahead_clear
-            if should_move:
-                potential_x -= self.speed
 
-        elif self.direction == "up":
-            if self.crossed == 0 and self.y < stopLines[self.direction]:
-                self.crossed = 1
-            vehicle_ahead_clear = current_index == 0 or self.y > (
-                current_lane_vehicles[current_index - 1].y
-                + current_lane_vehicles[current_index - 1].height
-                + movingGap
-            )
-            should_move = (
-                self.y >= self.stop or self.crossed == 1 or is_light_green
-            ) and vehicle_ahead_clear
-            if should_move:
-                potential_y -= self.speed
+        (
+            crossed_check,
+            clearance_check,
+            stop_condition,
+            potential_update,
+            vehicle_ahead,
+        ) = get_move_params(self.direction, current_index, current_lane_vehicles)
+
+        if self.crossed == 0 and crossed_check(self):
+            self.crossed = 1
+
+        vehicle_ahead_clear = clearance_check(self, vehicle_ahead)
+        should_move = (
+            stop_condition(self) or self.crossed == 1 or is_light_green
+        ) and vehicle_ahead_clear
+
+        if should_move:
+            potential_x, potential_y = potential_update(self)
+        # --- End Refactor ---
 
         # --- Check for Collisions *before* moving --- #
         if should_move:
-            # Create potential new rect for collision checking
             potential_rect = pygame.Rect(
                 potential_x, potential_y, self.width, self.height
             )
-
-            # Check against all other vehicles in the simulation group
             for other_vehicle in simulation_group:
-                if (
-                    other_vehicle is self or other_vehicle.crashed
-                ):  # Skip self and already crashed
+                if other_vehicle is self or other_vehicle.crashed:
                     continue
-
                 other_rect = pygame.Rect(
                     other_vehicle.x,
                     other_vehicle.y,
                     other_vehicle.width,
                     other_vehicle.height,
                 )
-
                 if potential_rect.colliderect(other_rect):
-                    # Collision detected!
                     self.crashed = True
                     other_vehicle.crashed = True
-                    crashed_this_step = (
-                        1  # Mark that a crash happened this step involving self
-                    )
+                    crashed_this_step = 1
                     logger.warning(
-                        f"Collision! Vehicle {self.id} ({self.direction}) at ({potential_x:.1f},{potential_y:.1f}) and Vehicle {other_vehicle.id} ({other_vehicle.direction}) at ({other_vehicle.x:.1f},{other_vehicle.y:.1f})"
+                        f"Collision! Vehicle {self.id} ({self.direction}) at ({potential_x:.1f},{potential_y:.1f}) "
+                        f"and Vehicle {other_vehicle.id} ({other_vehicle.direction}) at ({other_vehicle.x:.1f},{other_vehicle.y:.1f})"
                     )
-                    should_move = False  # Prevent movement due to collision
-                    break  # Stop checking for this vehicle once a crash occurs
+                    should_move = False
+                    break
 
         # --- Finalize Movement (if no collision occurred) --- #
         if should_move:
@@ -325,60 +348,45 @@ class Vehicle(pygame.sprite.Sprite):
             self.y = potential_y
             movement_occurred = True
 
-        # --- Update Waiting Time / Acceleration / Emission --- #
+        # --- Update Waiting Time / Acceleration / Emission (Refactored) --- #
+        self.accelerated = False
+        self.decelerated = False
+        emission_multiplier = 0.0  # Default
+
         if not movement_occurred:
-            # If vehicle didn't move (due to red light, vehicle ahead, or collision), increment waiting time
-            # Only count as waiting if not already crashed
             if not self.crashed:
+                # Increment waiting time if not crashed and didn't move
                 if self.id not in waiting_times[self.direction]:
                     waiting_times[self.direction][self.id] = 0
                 waiting_times[self.direction][self.id] += 1
                 self.waiting_time += 1
 
-            # Consider it deceleration if position *could* have changed but didn't
-            if old_x != self.x or old_y != self.y:
-                self.decelerated = True
-                self.accelerated = False
-                # Only add emission if not crashed
-                if not self.crashed:
-                    emission_amount = (
-                        emission_factors.get(self.vehicleClass, 1.0) * 0.1
-                    )  # Base waiting emission
-                    self.emission += emission_amount
-            else:
-                # Truly stopped
-                self.decelerated = False
-                self.accelerated = False
-                # Add idle emission if not crashed
-                if not self.crashed:
-                    emission_amount = (
-                        emission_factors.get(self.vehicleClass, 1.0) * 0.05
-                    )  # Lower idle emission
-                    self.emission += emission_amount
+                # Determine if stopped or truly idle
+                if (
+                    old_x != self.x or old_y != self.y
+                ):  # Could have moved but didn't (e.g., collision)
+                    self.decelerated = True
+                    emission_multiplier = 0.1  # Base waiting emission multiplier
+                else:  # Truly stopped/idle
+                    emission_multiplier = 0.05  # Lower idle emission multiplier
+            # Else: Crashed vehicles don't wait or accrue emissions here
 
         elif self.waiting_time > 0:  # Moved after waiting
             self.accelerated = True
-            self.decelerated = False
-            # Add acceleration emission if not crashed
-            if not self.crashed:
-                emission_amount = (
-                    emission_factors.get(self.vehicleClass, 1.0) * 1.5
-                )  # Higher emission for acceleration
-                self.emission += emission_amount
-            self.waiting_time = 0
+            emission_multiplier = 1.5  # Acceleration emission multiplier
+            self.waiting_time = 0  # Reset waiting time
         else:  # Moved without prior waiting (cruising)
-            self.accelerated = False
-            self.decelerated = False
-            # Add cruising emission if not crashed
-            if not self.crashed:
-                emission_amount = (
-                    emission_factors.get(self.vehicleClass, 1.0) * 1.0
-                )  # Base cruising emission
-                self.emission += emission_amount
+            emission_multiplier = 1.0  # Cruising emission multiplier
 
-        return (
-            crashed_this_step  # Return 1 if self was involved in a new crash this step
-        )
+        # Apply emission calculation if not crashed
+        if not self.crashed and emission_multiplier > 0:
+            base_emission_factor = emission_factors.get(self.vehicleClass, 1.0)
+            self.emission += base_emission_factor * emission_multiplier
+            # Note: self.emission accumulates over time. The update_emission method
+            # seems to calculate per-step emission, which might be redundant now?
+            # Consider if self.emission should store total or per-step.
+
+        return crashed_this_step
 
 
 # Global variable for the background thread
@@ -460,17 +468,3 @@ def generateVehicles():
             )
 
         time.sleep(random.uniform(0.5, 1.5))  # Randomize generation frequency
-
-
-# --- Start the background thread automatically --- #
-# Removed - This should be called from the main scripts (train/run_model)
-# def start_vehicle_generation_thread():
-#     global vehicle_generation_thread
-#     if vehicle_generation_thread is None or not vehicle_generation_thread.is_alive():
-#         vehicle_generation_thread = threading.Thread(
-#             name="generateVehicles", target=generateVehicles, daemon=True
-#         )
-#         vehicle_generation_thread.start()
-#         logger.info("Vehicle generation thread started.")
-#
-# start_vehicle_generation_thread()
