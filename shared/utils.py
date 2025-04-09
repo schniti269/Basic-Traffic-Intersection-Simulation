@@ -9,6 +9,7 @@ import logging
 import os
 from datetime import datetime
 from enum import Enum
+import tqdm
 
 # Create logs directory if not exists
 os.makedirs("logs", exist_ok=True)
@@ -37,6 +38,9 @@ console_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 logger.addHandler(console_handler)
 
+# Performance Mode Flag
+PERFORMANCE_MODE = True  # Set to True to reduce logging and show progress bars
+
 # Enable/Disable rendering
 ENABLE_RENDERING = False  # Default to False for neural network training
 MAX_EPISODES = 100  # Set the maximum number of training episodes for RL
@@ -51,7 +55,7 @@ defaultYellow = 5
 MANUAL_CONTROL = False  # Set to False to use our neural controller
 MAX_WAITING_TIME = 100  # Max time a car can wait before maximum penalty
 EMISSION_FACTOR = 0.1  # Penalty factor for emissions
-CRASH_PENALTY = -100  # Penalty for a crash
+CRASH_PENALTY = -1000  # Penalty for a crash
 WAITING_PENALTY = -0.1  # Penalty per car waiting per timestep
 REWARD_SCALE = 0.01  # Scale factor for rewards
 

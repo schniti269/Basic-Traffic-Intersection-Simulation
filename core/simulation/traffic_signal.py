@@ -1,6 +1,10 @@
-from utils import signals, currentGreen, nextGreen, currentYellow, noOfSignals
-from utils import defaultGreen, defaultYellow, defaultRed, directionNumbers
-from utils import vehicles, defaultStop, updateValues, logger, MANUAL_CONTROL
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from shared.utils import signals, currentGreen, nextGreen, currentYellow, noOfSignals
+from shared.utils import defaultGreen, defaultYellow, defaultRed, directionNumbers
+from shared.utils import vehicles, defaultStop, updateValues, logger, MANUAL_CONTROL
 import time
 
 
