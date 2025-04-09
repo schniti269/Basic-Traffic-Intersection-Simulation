@@ -22,7 +22,8 @@ from shared.utils import (
 from core.simulation.traffic_signal import initialize
 from core.simulation.vehicle import generateVehicles
 from core.agent.neural_model_01 import (
-    NeuralTrafficController,
+    # NeuralTrafficController, # Old REINFORCE class
+    NeuralTrafficControllerPPO,  # New PPO class
     get_vehicles_in_zones,
     DEFAULT_SCAN_ZONE_CONFIG,
 )
@@ -58,7 +59,8 @@ def train_simulation():
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     logger.info(f"Starting training for {TOTAL_EPOCHS} epochs...")
 
-    neural_controller = NeuralTrafficController(
+    # Instantiate the PPO controller
+    neural_controller = NeuralTrafficControllerPPO(
         steps_per_epoch=STEPS_PER_EPOCH, total_epochs=TOTAL_EPOCHS
     )
 
@@ -98,6 +100,7 @@ def train_simulation():
         vehicle_count = 0
         emissions_this_step = 0
 
+        # @cython.compile / @numba.jit (Potential Optimization Target for this loop)
         # Single loop over the simulation group to gather metrics
         for vehicle in simulation:
             # Check waiting status
@@ -122,11 +125,23 @@ def train_simulation():
         # --- Simulation Update (Movement & Cleanup) --- #
         crashes_this_step = 0  # Reset crash count for the step
         vehicles_to_remove = []
+
+        # --- Spatial Grid Update (Conceptual) --- #
+        # spatial_grid = update_spatial_grid(simulation) # Update grid before move checks
+        spatial_grid = None  # Placeholder
+        # --- End Spatial Grid Update --- #
+
         for vehicle in list(simulation):  # Iterate over a copy for safe removal
             crashes_result = 0
             if not vehicle.crashed:
+                # Pass the spatial grid to the move function
                 crashes_result = vehicle.move(
-                    vehicles, active_lights, stopLines, movingGap, simulation
+                    vehicles,
+                    active_lights,
+                    stopLines,
+                    movingGap,
+                    simulation,
+                    spatial_grid,
                 )
                 crashes_this_step += crashes_result
 
@@ -177,12 +192,16 @@ def train_simulation():
 
         # --- Training Epoch Check & Model Saving --- #
         if neural_controller.epoch_steps >= neural_controller.steps_per_epoch:
+            # Save model *before* end_epoch resets metrics used for filename
             epoch_reward = neural_controller.epoch_accumulated_reward
             epoch_crashes = neural_controller.total_crashes_epoch
-            save_filename = f"model_epoch_{current_epoch}_reward_{epoch_reward:.0f}_crashes_{epoch_crashes}.weights.h5"
-            save_path = os.path.join(MODEL_SAVE_DIR, save_filename)
-            neural_controller.save_model(save_path)
-            neural_controller.end_epoch()  # Trains model, resets metrics
+            # Use a prefix for saving actor/critic models
+            save_prefix = f"model_epoch_{current_epoch}_reward_{epoch_reward:.0f}_crashes_{epoch_crashes}"
+            save_path_prefix = os.path.join(MODEL_SAVE_DIR, save_prefix)
+            neural_controller.save_model(save_path_prefix)
+
+            # Now end the epoch (resets metrics, PPO training happens in update)
+            neural_controller.end_epoch()
         # --- End Training Epoch Check --- #
 
         # Apply the determined action for the next simulation step
@@ -196,11 +215,11 @@ def train_simulation():
 
     logger.info("Training finished.")
 
-    # Save the final model
-    final_save_filename = f"model_final_epoch_{neural_controller.current_epoch}_reward_{neural_controller.epoch_accumulated_reward:.0f}_crashes_{neural_controller.total_crashes_epoch}.weights.h5"
-    final_save_path = os.path.join(MODEL_SAVE_DIR, final_save_filename)
-    neural_controller.save_model(final_save_path)
-    logger.info(f"Final model saved to {final_save_path}")
+    # Save the final model (using prefix)
+    final_save_prefix = f"model_final_epoch_{neural_controller.current_epoch}_reward_{neural_controller.epoch_accumulated_reward:.0f}_crashes_{neural_controller.total_crashes_epoch}"
+    final_save_path_prefix = os.path.join(MODEL_SAVE_DIR, final_save_prefix)
+    neural_controller.save_model(final_save_path_prefix)
+    logger.info(f"Final PPO models saved with prefix {final_save_path_prefix}")
 
 
 # --- Main Execution --- #

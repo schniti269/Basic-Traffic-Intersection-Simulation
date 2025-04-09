@@ -211,7 +211,16 @@ class Vehicle(pygame.sprite.Sprite):
                 # Draw the text
                 screen.blit(text_surface, (text_x, text_y))
 
-    def move(self, vehicles, active_lights, stopLines, movingGap, simulation_group):
+    # @cython.compile / @numba.jit (Potential Optimization Target)
+    def move(
+        self,
+        vehicles: dict,
+        active_lights: list,
+        stopLines: dict,
+        movingGap: int,
+        simulation_group: pygame.sprite.Group,
+        spatial_grid=None,
+    ):
         """
         Move the vehicle based on traffic signals, other vehicles, and turning.
         Checks for collisions before finalizing movement.
@@ -322,7 +331,19 @@ class Vehicle(pygame.sprite.Sprite):
             potential_rect = pygame.Rect(
                 potential_x, potential_y, self.width, self.height
             )
-            for other_vehicle in simulation_group:
+
+            # --- Collision Check (using Spatial Grid concept) ---
+            potential_colliders = []
+            if spatial_grid:
+                # Get potential colliders from the grid cells the potential_rect overlaps
+                # potential_colliders = spatial_grid.query(potential_rect)
+                pass  # Placeholder for grid query logic
+            else:
+                # Fallback: Check against all vehicles if grid not available
+                potential_colliders = simulation_group
+
+            # @cython.cfunc / @numba.jit (inner loop calculations)
+            for other_vehicle in potential_colliders:
                 if other_vehicle is self or other_vehicle.crashed:
                     continue
                 other_rect = pygame.Rect(
