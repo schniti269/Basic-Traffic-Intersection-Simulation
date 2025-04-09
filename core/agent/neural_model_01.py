@@ -217,22 +217,36 @@ class NeuralTrafficControllerPPO:  # Renamed class
     def calculate_step_reward(
         self,
         avg_speed,
-        vehicle_count,
         crashes_this_step,
-        waiting_vehicles_this_step,
+        sum_sq_waiting_time,
         emissions_this_step,
+        newly_crossed_count,
     ):
-        """Calculate the raw reward for the current simulation step."""
-        speed_reward_weight = 0.5
-        waiting_penalty_weight = -0.2
-        emission_penalty_weight = -0.01
-        crash_penalty = -100.0  # Negative penalty for crashes
+        """Calculate the raw reward for the current simulation step.
+        Refined to penalize squared wait time and reward throughput.
+        """
+        # --- Weights (Tunable) ---
+        speed_reward_weight = 0.2  # Encourage smooth flow, less emphasis than before
+        waiting_penalty_weight = -0.005  # Penalize SUM of SQUARED wait times
+        emission_penalty_weight = -0.02  # Slightly increased penalty
+        crash_penalty = -50.0  # Reduced magnitude, still significant
+        throughput_reward_weight = 5.0  # Positive reward for clearing intersection
 
         reward = 0.0
+        # Positive Rewards
         reward += speed_reward_weight * avg_speed
-        reward += waiting_penalty_weight * waiting_vehicles_this_step
+        reward += throughput_reward_weight * newly_crossed_count
+
+        # Penalties
+        reward += (
+            waiting_penalty_weight * sum_sq_waiting_time
+        )  # Penalizes long waits more heavily
         reward += emission_penalty_weight * emissions_this_step
         reward += crash_penalty * crashes_this_step
+
+        # Clip reward to avoid extreme values (optional, helps stabilize learning)
+        # reward = np.clip(reward, -100.0, 50.0)
+
         return reward
 
     def store_transition(
@@ -472,25 +486,25 @@ class NeuralTrafficControllerPPO:  # Renamed class
     def update(  # Renamed from PPO perspective (this is effectively 'step')
         self,
         scan_zones,  # Current scan zone info
-        avg_speed,  # Avg speed THIS STEP (before move)
-        crashes_this_step,  # Crashes THIS STEP (during move)
-        waiting_vehicles,  # Waiting vehicles THIS STEP (before move)
-        emissions_this_step,  # Emissions THIS STEP (before move)
-        vehicle_count,  # Vehicle count THIS STEP (before move)
-        # Add done flag if applicable from environment
+        avg_speed,
+        crashes_this_step,
+        sum_sq_waiting_time,  # Updated parameter name
+        emissions_this_step,
+        newly_crossed_count,  # Updated parameter name
     ):
         """PPO Step: Get action, store transition, trigger learning.
 
         Returns:
             Action taken (list of booleans).
         """
-        # --- Aggregate metrics for epoch summary (before state calculation) --- #
+        # --- Aggregate metrics for epoch summary (using new metrics) --- #
         self.total_crashes_epoch += crashes_this_step
-        self.total_waiting_steps_epoch += waiting_vehicles
+        # self.total_waiting_steps_epoch += waiting_vehicles # Old metric
+        # Instead, maybe track average squared wait time or similar if needed for summary
         self.total_emissions_epoch += emissions_this_step
-        if vehicle_count > 0:
+        if newly_crossed_count > 0 or avg_speed > 0:  # Update if something happened
             self.sum_avg_speeds_epoch += avg_speed
-            self.vehicle_updates_epoch += 1
+            self.vehicle_updates_epoch += 1  # Count steps with activity
 
         # --- PPO Step --- #
         # 1. Get State representation from scan zones
@@ -507,10 +521,10 @@ class NeuralTrafficControllerPPO:  # Renamed class
             # Calculate reward for the transition that *led* to current_state
             step_reward = self.calculate_step_reward(
                 avg_speed,
-                vehicle_count,
                 crashes_this_step,
-                waiting_vehicles,
+                sum_sq_waiting_time,  # Pass new metric
                 emissions_this_step,
+                newly_crossed_count,  # Pass new metric
             )
             self.epoch_accumulated_reward += step_reward  # Accumulate for epoch summary
 

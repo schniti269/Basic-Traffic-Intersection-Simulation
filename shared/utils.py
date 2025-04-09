@@ -140,6 +140,66 @@ pygame.init()
 simulation = pygame.sprite.Group()
 
 
+# --- Spatial Grid for Collision Detection ---
+class SpatialGrid:
+    def __init__(self, width, height, cell_size):
+        self.width = width
+        self.height = height
+        self.cell_size = cell_size
+        self.grid_width = (width // cell_size) + 1
+        self.grid_height = (height // cell_size) + 1
+        self.grid = [[] for _ in range(self.grid_width * self.grid_height)]
+        logger.info(
+            f"Initialized Spatial Grid: {self.grid_width}x{self.grid_height} cells ({self.cell_size}px size)"
+        )
+
+    def _get_cell_indices(self, rect):
+        """Get all grid cell indices that a rectangle overlaps."""
+        indices = set()
+        start_col = max(0, rect.left // self.cell_size)
+        end_col = min(self.grid_width - 1, rect.right // self.cell_size)
+        start_row = max(0, rect.top // self.cell_size)
+        end_row = min(self.grid_height - 1, rect.bottom // self.cell_size)
+
+        for row in range(start_row, end_row + 1):
+            for col in range(start_col, end_col + 1):
+                indices.add(row * self.grid_width + col)
+        return indices
+
+    def clear(self):
+        """Clear the grid for the next step."""
+        for cell in self.grid:
+            cell.clear()
+
+    def insert(self, vehicle):
+        """Insert a vehicle into the grid based on its current position."""
+        # Use the vehicle's current rect for insertion
+        rect = pygame.Rect(vehicle.x, vehicle.y, vehicle.width, vehicle.height)
+        indices = self._get_cell_indices(rect)
+        for index in indices:
+            if 0 <= index < len(self.grid):
+                self.grid[index].append(vehicle)
+            else:
+                logger.warning(
+                    f"Attempted to insert vehicle {vehicle.id} into invalid grid index {index}."
+                )
+
+    def query(self, rect):
+        """Query the grid for vehicles potentially colliding with the given rect."""
+        potential_colliders = set()
+        indices = self._get_cell_indices(rect)
+        for index in indices:
+            if 0 <= index < len(self.grid):
+                potential_colliders.update(self.grid[index])
+            else:
+                logger.warning(f"Attempted to query invalid grid index {index}.")
+
+        return potential_colliders
+
+
+# --- End Spatial Grid ---
+
+
 # Update values of the signal timers after every second
 def updateValues():
     for i in range(0, noOfSignals):

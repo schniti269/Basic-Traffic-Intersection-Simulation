@@ -3,6 +3,7 @@ import threading
 import os
 from tqdm import tqdm
 import tensorflow as tf
+import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from shared.utils import (
@@ -18,6 +19,7 @@ from shared.utils import (
     PERFORMANCE_MODE,
     # screenWidth, # Assuming these are defined below for now
     # screenHeight, # Assuming these are defined below for now
+    SpatialGrid,  # Import the new class
 )
 from core.simulation.traffic_signal import initialize
 from core.simulation.vehicle import generateVehicles
@@ -30,16 +32,16 @@ from core.agent.neural_model_01 import (
 
 # --- Configuration --- #
 MODEL_SAVE_DIR = "saved_models"
-STEPS_PER_EPOCH = 10000
-TOTAL_EPOCHS = 50
+STEPS_PER_EPOCH = 2500
+TOTAL_EPOCHS = 500
 SCREEN_WIDTH = 1400  # Define screen dimensions clearly
 SCREEN_HEIGHT = 800
-# --- End Configuration --- #
+GRID_CELL_SIZE = (
+    100  # Size of grid cells for collision detection (tune based on vehicle sizes)
+)
 
-
-def train_simulation():
-    """Runs the traffic simulation training loop."""
-
+# --- Simulation Environment Setup --- #
+if not PERFORMANCE_MODE:
     # --- GPU Check --- #
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
@@ -59,10 +61,32 @@ def train_simulation():
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     logger.info(f"Starting training for {TOTAL_EPOCHS} epochs...")
 
-    # Instantiate the PPO controller
+
+def train_simulation():
+    """Runs the traffic simulation training loop."""
+    global currentGreen, currentYellow  # Allow modification
+
+    # --- Initialization ---
+    if not os.path.exists(MODEL_SAVE_DIR):
+        os.makedirs(MODEL_SAVE_DIR)
+
+    # PPO Controller
     neural_controller = NeuralTrafficControllerPPO(
         steps_per_epoch=STEPS_PER_EPOCH, total_epochs=TOTAL_EPOCHS
     )
+
+    # Initialize Traffic Signals
+    initialize()
+    active_lights = [False] * noOfSignals  # Start with all red
+
+    # Initialize Spatial Grid
+    spatial_grid = SpatialGrid(SCREEN_WIDTH, SCREEN_HEIGHT, GRID_CELL_SIZE)
+
+    # Start Vehicle Generation Thread
+    thread = threading.Thread(name="generateVehicles", target=generateVehicles, args=())
+    thread.daemon = True
+    thread.start()
+    logger.info("Vehicle generation thread started")
 
     # Start background threads
     thread1 = threading.Thread(name="initialization", target=initialize, args=())
@@ -70,16 +94,8 @@ def train_simulation():
     thread1.start()
     logger.info("Initialization thread started")
 
-    thread2 = threading.Thread(
-        name="generateVehicles", target=generateVehicles, args=()
-    )
-    thread2.daemon = True
-    thread2.start()
-    logger.info("Vehicle generation thread started")
-
     total_steps = 0
     running = True
-    active_lights = [False] * noOfSignals  # Initial light state
 
     total_simulation_steps = TOTAL_EPOCHS * STEPS_PER_EPOCH
     pbar = tqdm(
@@ -93,15 +109,22 @@ def train_simulation():
     while running and total_steps < total_simulation_steps:
         current_epoch = neural_controller.current_epoch
 
-        # --- Calculate Step Metrics (Refactored) --- #
-        # Calculate metrics *before* the move step for the current state
+        # --- Clear and Populate Spatial Grid --- #
+        spatial_grid.clear()
+        for vehicle in simulation:
+            spatial_grid.insert(vehicle)
+        # --- End Grid Update ---
+
+        # --- Metric Calculation --- #
         waiting_vehicles_this_step = 0
         sum_speed = 0
         vehicle_count = 0
         emissions_this_step = 0
+        sum_sq_waiting_time = 0  # New metric
+        vehicles_crossed_this_step = 0  # New metric (will be calculated post-move)
 
         # @cython.compile / @numba.jit (Potential Optimization Target for this loop)
-        # Single loop over the simulation group to gather metrics
+        # Single loop over the simulation group to gather metrics PRE-MOVE
         for vehicle in simulation:
             # Check waiting status
             if not vehicle.crashed and vehicle.waiting_time > 0:
@@ -116,25 +139,28 @@ def train_simulation():
             # We use update_emission here as it likely represents the intended per-step value for reward.
             if not vehicle.crashed:
                 emissions_this_step += vehicle.update_emission()
+                # Calculate sum of squared waiting times for waiting vehicles
+                if vehicle.waiting_time > 0:
+                    sum_sq_waiting_time += vehicle.waiting_time**2
 
         # Calculate average speed
         avg_speed = sum_speed / vehicle_count if vehicle_count > 0 else 0
-
         # --- End Metric Calculation --- #
 
         # --- Simulation Update (Movement & Cleanup) --- #
         crashes_this_step = 0  # Reset crash count for the step
         vehicles_to_remove = []
+        newly_crossed_count = 0  # Track vehicles crossing *this* step
 
         # --- Spatial Grid Update (Conceptual) --- #
         # spatial_grid = update_spatial_grid(simulation) # Update grid before move checks
-        spatial_grid = None  # Placeholder
+        # spatial_grid = None  # Placeholder // REMOVED, grid is now passed
         # --- End Spatial Grid Update --- #
 
         for vehicle in list(simulation):  # Iterate over a copy for safe removal
             crashes_result = 0
             if not vehicle.crashed:
-                # Pass the spatial grid to the move function
+                # Pass the *populated* spatial grid to the move function
                 crashes_result = vehicle.move(
                     vehicles,
                     active_lights,
@@ -144,6 +170,12 @@ def train_simulation():
                     spatial_grid,
                 )
                 crashes_this_step += crashes_result
+                # Check if vehicle crossed the line *during this move*
+                if vehicle.crossed == 1 and not hasattr(
+                    vehicle, "_crossed_last_step"
+                ):  # Track first time crossing
+                    newly_crossed_count += 1
+                    vehicle._crossed_last_step = True  # Mark it so we don't count again
 
             # Off-screen check - Use configured dimensions
             off_screen = (
@@ -184,9 +216,10 @@ def train_simulation():
             scan_zones,
             avg_speed,  # Avg speed from *before* move
             crashes_this_step,  # Crashes that happened *during* move
-            waiting_vehicles_this_step,  # Waiting vehicles *before* move
+            sum_sq_waiting_time,  # Use sum of squares instead of count
             emissions_this_step,  # Emissions calculated *before* move
-            vehicle_count,  # Vehicle count *before* move
+            newly_crossed_count,  # Pass number of vehicles that crossed this step
+            # vehicle_count was unused, replacing with newly_crossed_count
         )
         # --- End Neural Controller Update --- #
 
@@ -209,6 +242,13 @@ def train_simulation():
 
         total_steps += 1
         pbar.update(1)
+
+        if not PERFORMANCE_MODE:
+            logger.info("Waiting for SPACE key press to continue...")
+            while neural_controller.waiting_for_space:
+                if neural_controller.check_for_space():
+                    break  # Exit wait loop once space is pressed
+                time.sleep(0.1)  # Prevent busy-waiting
 
     # --- End of Training Loop --- #
     pbar.close()

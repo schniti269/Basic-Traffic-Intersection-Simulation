@@ -39,28 +39,12 @@ DEFAULT_MODEL_PREFIX = (
 # --- End Configuration ---
 
 
-def run_visual_simulation(model_path_prefix):
+def run_visual_simulation(actor_path):
     """Runs the traffic simulation with visuals using a trained PPO model prefix."""
-    logger.info(f"Starting visual simulation using model prefix: {model_path_prefix}")
-
-    # Check if the actor file exists (as a proxy for the prefix being valid)
-    actor_path = f"{model_path_prefix}_actor.weights.h5"
-    if not os.path.exists(actor_path):
-        # Check if path relative to saved_models works
-        alt_actor_path = os.path.join("..", actor_path)
-        if os.path.exists(alt_actor_path):
-            # If the relative path works, update the prefix to be relative too
-            model_path_prefix = os.path.join("..", model_path_prefix)
-            logger.info(f"Adjusted model prefix to relative path: {model_path_prefix}")
-        else:
-            logger.error(
-                f"Model file not found for prefix: {model_path_prefix} (Checked {actor_path} and {alt_actor_path})"
-            )
-            sys.exit(1)
 
     # Create PPO controller
     neural_controller = NeuralTrafficControllerPPO(steps_per_epoch=1, total_epochs=1)
-    neural_controller.load_model(model_path_prefix)  # Load using the prefix
+    neural_controller.load_model(actor_path)  # Load using the prefix
     neural_controller.render_interval = 1  # Ensure rendering is always on
     neural_controller.show_render = True
 
@@ -174,7 +158,7 @@ def run_visual_simulation(model_path_prefix):
         screen.blit(background, (0, 0))
 
         info_text = [
-            f"Model Prefix: {os.path.basename(model_path_prefix)}",  # Updated label
+            f"Model Prefix: {os.path.basename(model_path)}",  # Updated label
             f"Step: {total_steps}/{VISUAL_SIM_STEPS}",
             f"Waiting Now: {waiting_vehicles_this_step}",
             f"Crashes This Step: {crashes_this_step}",
@@ -207,52 +191,5 @@ def run_visual_simulation(model_path_prefix):
 
 # --- Main Execution --- #
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Run Traffic Simulation with a trained PPO model."
-    )
-    parser.add_argument(
-        "model_prefix",  # Renamed argument
-        nargs="?",
-        default=DEFAULT_MODEL_PREFIX,
-        help="Path prefix for the saved PPO model (e.g., 'saved_models/model_epoch_10_reward_...')",
-    )
-    args = parser.parse_args()
-
-    if args.model_prefix is None:
-        logger.warning(
-            "No model prefix provided. Attempting to find latest model prefix..."
-        )
-        try:
-            models_dir = "saved_models"
-            # Find all potential actor files to determine prefixes
-            actor_files = [
-                os.path.join(models_dir, f)
-                for f in os.listdir(models_dir)
-                if f.endswith("_actor.weights.h5")
-            ]
-            if not actor_files:
-                logger.error(
-                    f"No PPO models (*_actor.weights.h5) found in {models_dir}."
-                )
-                sys.exit(1)
-
-            latest_actor_file = max(actor_files, key=os.path.getctime)
-            # Derive prefix by removing the suffix
-            prefix_length = len("_actor.weights.h5")
-            latest_prefix = latest_actor_file[:-prefix_length]
-            logger.info(f"Using latest model prefix found: {latest_prefix}")
-            args.model_prefix = latest_prefix
-        except FileNotFoundError:
-            logger.error(f"Directory '{models_dir}' not found.")
-            sys.exit(1)
-        except Exception as e:
-            logger.error(f"Error finding latest model prefix: {e}")
-            sys.exit(1)
-
-    try:
-        run_visual_simulation(args.model_prefix)
-    except Exception as e:
-        logger.exception(f"An error occurred during simulation run: {e}")
-    finally:
-        pygame.quit()
-        sys.exit()
+    model_path = r"C:\Users\ian-s\Basic-Traffic-Intersection-Simulation\saved_models\model_epoch_238_reward_-71736_crashes_0_actor.weights.h5"
+    run_visual_simulation(model_path)

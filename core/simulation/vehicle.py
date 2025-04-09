@@ -40,6 +40,13 @@ class Vehicle(pygame.sprite.Sprite):
         self.y = y[direction][lane]
         self.crossed = 0
         self.id = f"{direction}_{lane}_{len(vehicles[direction][lane])}"
+
+        # --- Consistently set dimensions first ---
+        self.width, self.height = DEFAULT_DIMS.get(vehicleClass, (40, 40))
+        logger.debug(
+            f"Initial dimensions for {self.id} ({vehicleClass}): {self.width}x{self.height}"
+        )
+
         self.waiting_time = 0
         self.accelerated = False
         self.decelerated = False
@@ -56,26 +63,30 @@ class Vehicle(pygame.sprite.Sprite):
             self
         )  # Append self *after* index is calculated
 
-        # Set default dimensions
-        self.width, self.height = DEFAULT_DIMS.get(vehicleClass, (40, 40))
         self.image = None
         self.font = None  # Initialize font as None
 
-        # Only load images and fonts if Pygame display is initialized (rendering is active)
+        # Optionally load images and potentially adjust visual size if Pygame is active
         if pygame.display.get_init():
             try:
                 path = "images/" + direction + "/" + vehicleClass + ".png"
-                self.image = pygame.image.load(path)
-                self.width = self.image.get_rect().width
-                self.height = self.image.get_rect().height
-                # Initialize font only when needed for rendering
+                loaded_image = pygame.image.load(path)
+                # Check if loaded image size differs significantly from defaults
+                img_width = loaded_image.get_rect().width
+                img_height = loaded_image.get_rect().height
+                if img_width != self.width or img_height != self.height:
+                    logger.warning(
+                        f"Image {path} dimensions ({img_width}x{img_height}) differ from default ({self.width}x{self.height}). Physics uses defaults."
+                    )
+                self.image = loaded_image  # Store loaded image for rendering
                 self.font = pygame.font.Font(None, 24)
             except pygame.error as e:
                 logger.error(
-                    f"Error loading image {path} or font: {e}. Using default dimensions."
+                    f"Error loading image {path} or font: {e}. Rendering will use default dimensions."
                 )
-                self.image = None  # Ensure image is None if loading failed
+                self.image = None
                 self.font = None
+        # --- Dimensions are now set consistently regardless of rendering ---
 
         # --- Refactored stop coordinate calculation ---
         stop_calculators = {
@@ -89,12 +100,31 @@ class Vehicle(pygame.sprite.Sprite):
             and vehicles[direction][lane][self.index - 1].crossed == 0
         ):
             vehicle_ahead = vehicles[direction][lane][self.index - 1]
-            calculate_stop = stop_calculators.get(direction)
-            if calculate_stop:
-                self.stop = calculate_stop(vehicle_ahead)
+            # Check if vehicle_ahead has the 'stop' attribute initialized
+            if hasattr(vehicle_ahead, "stop"):
+                calculate_stop = stop_calculators.get(direction)
+                if calculate_stop:
+                    try:  # Add try-except just in case stop calculation fails for other reasons
+                        self.stop = calculate_stop(vehicle_ahead)
+                    except (
+                        AttributeError
+                    ):  # Catch potential errors within lambda if ahead state is unexpected
+                        logger.warning(
+                            f"AttributeError calculating stop for {self.id} behind {vehicle_ahead.id}. Using default."
+                        )
+                        self.stop = defaultStop[direction]
+                else:
+                    self.stop = defaultStop[
+                        direction
+                    ]  # Fallback if direction not in calculators
             else:
-                self.stop = defaultStop[direction]  # Fallback
+                # If vehicle_ahead doesn't have 'stop' yet, use default stop for this vehicle
+                logger.debug(
+                    f"Vehicle ahead {vehicle_ahead.id} has no 'stop' attribute yet. Using default stop for {self.id}."
+                )
+                self.stop = defaultStop[direction]
         else:
+            # No vehicle ahead or the one ahead has crossed
             self.stop = defaultStop[direction]
         # --- End Refactor ---
 
@@ -284,9 +314,7 @@ class Vehicle(pygame.sprite.Sprite):
             elif direction == "left":
                 crossed_check = lambda v: v.x < stopLines[direction]
                 if vehicle_ahead:
-                    clearance_check = lambda v, ahead: v.x > (
-                        ahead.x + ahead.width + movingGap
-                    )
+                    clearance_check = lambda v, ahead: v.x > (ahead.x + movingGap)
                 stop_condition = lambda v: v.x >= v.stop
                 potential_update = lambda v: (v.x - v.speed, v.y)
             elif direction == "up":
@@ -332,19 +360,25 @@ class Vehicle(pygame.sprite.Sprite):
                 potential_x, potential_y, self.width, self.height
             )
 
-            # --- Collision Check (using Spatial Grid concept) ---
+            # --- Collision Check (using Spatial Grid) ---
             potential_colliders = []
             if spatial_grid:
                 # Get potential colliders from the grid cells the potential_rect overlaps
-                # potential_colliders = spatial_grid.query(potential_rect)
-                pass  # Placeholder for grid query logic
+                potential_colliders = spatial_grid.query(potential_rect)
+                # Remove self from potential colliders immediately
+                potential_colliders.discard(self)
             else:
-                # Fallback: Check against all vehicles if grid not available
+                # Fallback: Check against all vehicles if grid not available (slower)
+                logger.warning(
+                    "Spatial grid not provided to move(), falling back to slow collision check."
+                )
                 potential_colliders = simulation_group
 
             # @cython.cfunc / @numba.jit (inner loop calculations)
             for other_vehicle in potential_colliders:
-                if other_vehicle is self or other_vehicle.crashed:
+                if (
+                    other_vehicle is self or other_vehicle.crashed
+                ):  # Double-check self removal
                     continue
                 other_rect = pygame.Rect(
                     other_vehicle.x,
