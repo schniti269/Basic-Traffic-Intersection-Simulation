@@ -27,8 +27,6 @@ from core.simulation.vehicle import generateVehicles
 # Removed: from rl_environment import TrafficEnvironment, DEFAULT_SCAN_ZONE_CONFIG
 from core.agent.neural_model_01 import (
     NeuralTrafficControllerPPO,
-    get_vehicles_in_zones,
-    DEFAULT_SCAN_ZONE_CONFIG,
 )
 
 # --- Simulation Configuration ---
@@ -110,10 +108,14 @@ def run_visual_simulation(actor_path):
         # --- End Metric Calculation --- #
 
         # --- Get Action from Loaded PPO Model --- #
-        scan_zones = get_vehicles_in_zones(
-            directionNumbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG
-        )
-        current_state = neural_controller.get_state(scan_zones)
+        # scan_zones = get_vehicles_in_zones( # REMOVED OLD METHOD
+        #     directionNumbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG
+        # )
+        # current_state = neural_controller.get_state(scan_zones) # REMOVED OLD METHOD
+
+        # Get state directly from the simulation group
+        current_state = neural_controller.get_state(simulation)
+
         # Use get_action_and_value, but only need the action for simulation
         action_floats, _, _ = neural_controller.get_action_and_value(current_state)
         # Convert action floats (0.0/1.0) to booleans for simulation use
@@ -128,7 +130,7 @@ def run_visual_simulation(actor_path):
             if not vehicle.crashed:
                 # Using None for spatial_grid as it's not implemented here
                 crashes_result = vehicle.move(
-                    vehicles, active_lights, stopLines, movingGap, simulation, None
+                    vehicles, active_lights, stopLines, movingGap, simulation
                 )
                 crashes_this_step += crashes_result
 
@@ -191,5 +193,5 @@ def run_visual_simulation(actor_path):
 
 # --- Main Execution --- #
 if __name__ == "__main__":
-    model_path = r"C:\Users\ian-s\Basic-Traffic-Intersection-Simulation\saved_models\model_epoch_238_reward_-71736_crashes_0_actor.weights.h5"
+    model_path = r"C:\Users\ian-s\Basic-Traffic-Intersection-Simulation\saved_models\model_epoch_16_reward_10792_crashes_4_critic.weights.h5"
     run_visual_simulation(model_path)

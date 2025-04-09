@@ -8,6 +8,7 @@ from tensorflow.keras.optimizers import Adam
 import random
 from collections import deque
 import os
+import math
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from shared.utils import PERFORMANCE_MODE
@@ -27,6 +28,13 @@ UPDATE_EVERY_N_STEPS = 4000  # How often to run the learning update
 BATCH_SIZE = 64  # Batch size for sampling from buffer
 # --- End PPO Hyperparameters --- #
 
+# --- New State Representation Config --- #
+MAX_VEHICLES = 50  # Maximum number of vehicles to consider in the state
+VEHICLE_FEATURES = 4  # distance, speed, wait_time, angle
+FLAT_STATE_SIZE = MAX_VEHICLES * VEHICLE_FEATURES
+INTERSECTION_CENTER_X = 700  # Approx center based on typical 1400 width
+INTERSECTION_CENTER_Y = 400  # Approx center based on typical 800 height
+# --- End New State Config --- #
 
 # Default scan zone config (changed to dictionary)
 DEFAULT_SCAN_ZONE_CONFIG = {
@@ -80,18 +88,17 @@ DEFAULT_SCAN_ZONE_CONFIG = {
     },
 }
 
-
 logger = logging.getLogger(__name__)
 
 
 class NeuralTrafficControllerPPO:  # Renamed class
     def __init__(self, steps_per_epoch=10000, total_epochs=50):
-        # Configuration (Some original config might be less relevant for PPO step-based updates)
-        self.steps_per_epoch = steps_per_epoch  # Still useful for reporting/saving
-        self.total_epochs = total_epochs  # Total simulation duration
-        self.input_shape = (4, 20, 5)
-        self.output_size = 4
-        self.render_interval = 10  # epochs between renders
+        # Configuration
+        self.steps_per_epoch = steps_per_epoch
+        self.total_epochs = total_epochs
+        self.input_size = FLAT_STATE_SIZE  # NEW FLAT INPUT SIZE
+        self.output_size = 4  # Assuming 4 traffic light phases/actions
+        self.render_interval = 10
 
         # PPO Specific State
         self.replay_buffer = deque(maxlen=REPLAY_BUFFER_SIZE)
@@ -129,24 +136,23 @@ class NeuralTrafficControllerPPO:  # Renamed class
             self.critic = None
 
         # Store last state for TD calculations
-        self.last_state = None
+        self.last_state = np.zeros(self.input_size)  # Initialize with correct shape
         self.last_action_log_prob = None
         self.last_value = None
         self.last_action = None
 
     def _build_actor_critic_models(self):
         """Builds separate Actor (policy) and Critic (value) networks."""
-        # Input Layer
-        input_layer = Input(shape=self.input_shape)
-        flattened = Flatten()(input_layer)
+        # Input Layer - Now expecting a flat vector
+        input_layer = Input(shape=(self.input_size,), name="flat_state_input")
 
-        # Shared layers (optional, can be separate)
-        shared_dense1 = Dense(256, activation="relu")(flattened)
+        # Shared layers (or direct connection)
+        # Using the flat input directly
+        shared_dense1 = Dense(256, activation="relu")(input_layer)
         shared_dense2 = Dense(128, activation="relu")(shared_dense1)
 
         # --- Actor Head ---
         # Outputs logits for each action dimension (traffic light)
-        # We use logits for numerical stability in loss calculation
         action_logits = Dense(self.output_size, activation=None, name="action_logits")(
             shared_dense2
         )
@@ -159,33 +165,79 @@ class NeuralTrafficControllerPPO:  # Renamed class
 
         return actor, critic
 
-    def get_state(self, scan_zones):
-        """Convert scan zone data to a state representation.
+    def get_state(self, vehicles):  # CHANGED Input argument
+        """Convert vehicle group data into a flat state vector.
 
         Args:
-            scan_zones: List of 4 lists containing vehicle data from each zone.
+            vehicles: A pygame.sprite.Group containing Vehicle objects.
 
         Returns:
-            State matrix of shape (4, 20, 5).
+            A flat NumPy array representing the state, sorted by distance
+            and padded/truncated to MAX_VEHICLES. Shape: (FLAT_STATE_SIZE,).
         """
-        state = np.zeros(self.input_shape)
-        for zone_idx, zone_vehicles in enumerate(scan_zones):
-            zone_vehicles.sort(key=lambda x: x["distance"])
-            for vehicle_idx, vehicle_data in enumerate(zone_vehicles[:20]):
-                if vehicle_idx >= 20:
-                    break
-                vehicle = vehicle_data["vehicle"]
-                vehicle_type_map = {"car": 0, "bus": 0.33, "truck": 0.67, "bike": 1}
-                state[zone_idx, vehicle_idx, 0] = min(
-                    vehicle_data["distance"] / 500, 1.0
+        state_features = []
+        center_x = INTERSECTION_CENTER_X
+        center_y = INTERSECTION_CENTER_Y
+
+        if not vehicles:  # Handle empty group
+            return np.zeros(self.input_size)
+
+        vehicle_data_list = []
+
+        for vehicle in vehicles:
+            if vehicle.crashed:  # Skip crashed vehicles
+                continue
+
+            try:
+                # Calculate features relative to the intersection center
+                dx = vehicle.rect.centerx - center_x
+                dy = vehicle.rect.centery - center_y
+                distance = math.sqrt(dx**2 + dy**2)
+                angle = math.atan2(dy, dx)  # Radians from -pi to pi
+                speed = vehicle.speed
+                wait_time = vehicle.waiting_time
+
+                # Store distance along with features for sorting
+                vehicle_data_list.append(
+                    (distance, [distance, speed, wait_time, angle])
                 )
-                state[zone_idx, vehicle_idx, 1] = min(vehicle_data["speed"] / 10, 1.0)
-                state[zone_idx, vehicle_idx, 2] = vehicle_type_map.get(
-                    vehicle_data["type"], 0
+
+            except AttributeError as e:
+                logger.error(
+                    f"Error accessing vehicle attributes: {e}. Vehicle: {vehicle}"
                 )
-                state[zone_idx, vehicle_idx, 3] = (vehicle_data["acceleration"] + 1) / 2
-                state[zone_idx, vehicle_idx, 4] = min(vehicle.waiting_time / 100, 1.0)
-        return state
+                continue  # Skip vehicles with missing attributes
+
+        # Sort vehicles by distance (ascending)
+        vehicle_data_list.sort(key=lambda x: x[0])
+
+        # Extract features for the closest MAX_VEHICLES
+        num_vehicles_to_include = min(len(vehicle_data_list), MAX_VEHICLES)
+        for i in range(num_vehicles_to_include):
+            # Append the feature list: [distance, speed, wait_time, angle]
+            state_features.extend(vehicle_data_list[i][1])
+
+        # Pad with zeros if fewer than MAX_VEHICLES
+        num_padding_features = (
+            MAX_VEHICLES - num_vehicles_to_include
+        ) * VEHICLE_FEATURES
+        state_features.extend([0.0] * num_padding_features)
+
+        # Ensure the final state has the correct size, clip if necessary (safety net)
+        if len(state_features) > self.input_size:
+            logger.warning(
+                f"Calculated state features ({len(state_features)}) exceed expected input size ({self.input_size}). Clipping."
+            )
+            state_features = state_features[: self.input_size]
+        elif len(state_features) < self.input_size:
+            # This case should be handled by padding, but log if it occurs
+            logger.error(
+                f"Calculated state features ({len(state_features)}) less than expected input size ({self.input_size}) after padding."
+            )
+            # Pad again just in case
+            state_features.extend([0.0] * (self.input_size - len(state_features)))
+
+        return np.array(state_features, dtype=np.float32)
 
     # @tf.function # Can compile for faster inference
     def get_action_and_value(self, state):
@@ -198,7 +250,20 @@ class NeuralTrafficControllerPPO:  # Renamed class
             ]
             return np.array(action), 0.0, 0.0
 
-        state_tensor = tf.convert_to_tensor([state], dtype=tf.float32)
+        # Ensure state is the correct flat shape before converting to tensor
+        if state.shape != (self.input_size,):
+            logger.error(
+                f"State shape mismatch in get_action_and_value. Expected {(self.input_size,)}, got {state.shape}. Using zeros."
+            )
+            # Attempt to reshape or use zeros as fallback
+            try:
+                state = np.reshape(state, (self.input_size,))
+            except ValueError:
+                state = np.zeros(self.input_size)  # Fallback to zeros if reshape fails
+
+        state_tensor = tf.convert_to_tensor(
+            [state], dtype=tf.float32
+        )  # Pass as batch of 1
         action_logits = self.actor(state_tensor, training=False)
         value = self.critic(state_tensor, training=False)[0, 0]
         action_probs = tf.sigmoid(action_logits)[0]
@@ -226,11 +291,11 @@ class NeuralTrafficControllerPPO:  # Renamed class
         Refined to penalize squared wait time and reward throughput.
         """
         # --- Weights (Tunable) ---
-        speed_reward_weight = 0.2  # Encourage smooth flow, less emphasis than before
-        waiting_penalty_weight = -0.005  # Penalize SUM of SQUARED wait times
-        emission_penalty_weight = -0.02  # Slightly increased penalty
-        crash_penalty = -50.0  # Reduced magnitude, still significant
-        throughput_reward_weight = 5.0  # Positive reward for clearing intersection
+        speed_reward_weight = 2.0  # Encourage smooth flow, less emphasis than before
+        waiting_penalty_weight = -0.1  # Penalize SUM of SQUARED wait times
+        emission_penalty_weight = 0  # Slightly increased penalty
+        crash_penalty = -100.0  # Reduced magnitude, still significant
+        throughput_reward_weight = +1.0  # Positive reward for clearing intersection
 
         reward = 0.0
         # Positive Rewards
@@ -238,9 +303,7 @@ class NeuralTrafficControllerPPO:  # Renamed class
         reward += throughput_reward_weight * newly_crossed_count
 
         # Penalties
-        reward += (
-            waiting_penalty_weight * sum_sq_waiting_time
-        )  # Penalizes long waits more heavily
+        reward += waiting_penalty_weight  # Penalizes long waits more heavily
         reward += emission_penalty_weight * emissions_this_step
         reward += crash_penalty * crashes_this_step
 
@@ -485,75 +548,93 @@ class NeuralTrafficControllerPPO:  # Renamed class
 
     def update(  # Renamed from PPO perspective (this is effectively 'step')
         self,
-        scan_zones,  # Current scan zone info
+        current_vehicles,  # NEW Input: The group of active vehicles
         avg_speed,
         crashes_this_step,
         sum_sq_waiting_time,  # Updated parameter name
         emissions_this_step,
         newly_crossed_count,  # Updated parameter name
     ):
-        """PPO Step: Get action, store transition, trigger learning.
+        """Processes one step of the simulation: calculates reward, stores transition, potentially learns.
+
+        Args:
+            current_vehicles: Pygame sprite group containing current Vehicle objects.
+            avg_speed: Average speed of vehicles in the previous step.
+            crashes_this_step: Number of crashes that occurred in the previous step.
+            sum_sq_waiting_time: Sum of squared waiting times for vehicles.
+            emissions_this_step: Total emissions from vehicles in the previous step.
+            newly_crossed_count: Number of vehicles that crossed the intersection.
 
         Returns:
-            Action taken (list of booleans).
+            The action (list/array of light states) determined for the *next* step.
         """
-        # --- Aggregate metrics for epoch summary (using new metrics) --- #
-        self.total_crashes_epoch += crashes_this_step
-        # self.total_waiting_steps_epoch += waiting_vehicles # Old metric
-        # Instead, maybe track average squared wait time or similar if needed for summary
-        self.total_emissions_epoch += emissions_this_step
-        if newly_crossed_count > 0 or avg_speed > 0:  # Update if something happened
-            self.sum_avg_speeds_epoch += avg_speed
-            self.vehicle_updates_epoch += 1  # Count steps with activity
+        # 1. Get state from the current vehicle group
+        current_state = self.get_state(current_vehicles)
 
-        # --- PPO Step --- #
-        # 1. Get State representation from scan zones
-        current_state = self.get_state(scan_zones)
-
-        # 2. Get Action, Log Prob, and Value from Actor-Critic
-        action_floats, log_prob, value = self.get_action_and_value(current_state)
-        # Convert action floats (0.0/1.0) to booleans for simulation use
-        action_taken_bools = (action_floats > 0.5).tolist()
-
-        # 3. Store the *previous* step's transition (if available)
-        # We need current_state as the 'next_state' for the previous transition
+        # 2. Calculate reward based on the outcome of the *previous* step/action
+        #    Note: We use metrics from the *previous* state transition leading *to* this current_state.
+        #    If it's the very first step, last_state will be zeros, leading to zero reward initially.
+        reward = 0.0
         if self.last_state is not None:
-            # Calculate reward for the transition that *led* to current_state
-            step_reward = self.calculate_step_reward(
+            # Calculate reward based on the metrics provided (which resulted from the last action)
+            reward = self.calculate_step_reward(
                 avg_speed,
                 crashes_this_step,
-                sum_sq_waiting_time,  # Pass new metric
+                sum_sq_waiting_time,
                 emissions_this_step,
-                newly_crossed_count,  # Pass new metric
+                newly_crossed_count,
             )
-            self.epoch_accumulated_reward += step_reward  # Accumulate for epoch summary
+            self.epoch_accumulated_reward += reward
+            # Also update epoch summary metrics
+            self.total_crashes_epoch += crashes_this_step
+            # self.total_waiting_steps_epoch += waiting_vehicles_this_step # Need to rethink how to track this if needed
+            self.total_emissions_epoch += emissions_this_step
+            self.sum_avg_speeds_epoch += avg_speed
+            self.vehicle_updates_epoch += 1  # Increment count for averaging speed
 
-            # Assume 'done' is False for now unless environment provides it
-            done = False
-            self.store_transition(
-                self.last_state,
-                self.last_action,
-                step_reward,
-                current_state,
-                done,
-                self.last_action_log_prob,
-                self.last_value,
-            )
+            # 3. Store the *previous* transition (state, action, reward, next_state)
+            #    The 'next_state' is the 'current_state' we just calculated.
+            done = False  # Assume not done unless termination condition met (e.g., max steps)
+            if (
+                self.last_action is not None
+            ):  # Check if we actually took an action before
+                self.store_transition(
+                    self.last_state,
+                    self.last_action,
+                    reward,
+                    current_state,
+                    done,  # Need a proper 'done' signal if episodes end
+                    self.last_action_log_prob,
+                    self.last_value,
+                )
 
-        # 4. Update last known values for the *next* transition
+        # 4. Get the action and value for the *current* state
+        action, action_log_prob, value = self.get_action_and_value(current_state)
+        next_active_lights = [
+            bool(a > 0.5) for a in action
+        ]  # Convert action probabilities/logits back to bool lights
+
+        # 5. Update 'last' variables for the next iteration
         self.last_state = current_state
-        self.last_action = action_floats  # Store float action used for log_prob calc
-        self.last_action_log_prob = log_prob
+        self.last_action = action
+        self.last_action_log_prob = action_log_prob
         self.last_value = value
 
-        # 5. Trigger PPO learning update periodically
+        # Update global step counters
         self.total_steps += 1
         self.epoch_steps += 1
-        if self.total_steps % UPDATE_EVERY_N_STEPS == 0:
+
+        # 6. Trigger PPO learning update if enough steps have passed and buffer is full
+        if (
+            self.total_steps % UPDATE_EVERY_N_STEPS == 0
+            and len(self.replay_buffer) >= MIN_BUFFER_SIZE
+        ):
+            if not PERFORMANCE_MODE:
+                logger.info(f"--- Triggering PPO Learn Step {self.total_steps} ---")
             self.learn_ppo()
 
-        # Return the boolean action for the simulation to execute
-        return action_taken_bools
+        # Return the action decided for the *next* simulation step
+        return next_active_lights
 
     def save_model(self, filepath_prefix):
         """Saves the actor and critic model weights."""
@@ -593,98 +674,3 @@ class NeuralTrafficControllerPPO:  # Renamed class
             logger.error(
                 "Attempted to load PPO weights, but models are None. Build models first."
             )
-
-
-# Helper function (potential optimization target)
-# @cython.compile / @numba.jit
-def get_vehicles_in_zones(
-    direction_numbers: dict, vehicles: dict, DEFAULT_SCAN_ZONE_CONFIG: dict
-) -> list:
-    """Get all vehicles in each scan zone.
-
-    Args:
-        direction_numbers: Mapping from direction name to number.
-        vehicles: Dictionary of vehicles by direction and lane.
-        DEFAULT_SCAN_ZONE_CONFIG: Configuration for scan zones.
-
-    Returns:
-        List of 4 lists containing vehicle data for each zone.
-    """
-    zone_directions = ["right", "down", "left", "up"]
-    all_zone_vehicles = []
-
-    fallback_dimensions = {
-        "car": (40, 40),
-        "bus": (60, 60),
-        "truck": (60, 60),
-        "bike": (20, 20),
-    }
-    default_dims = (40, 40)
-
-    # Corrected distance calculators (simpler version)
-    distance_calculators = {
-        "right": lambda v, cam, dims: v.x - cam["x"],
-        "left": lambda v, cam, dims: cam["x"] - (v.x + dims[0]),
-        "down": lambda v, cam, dims: cam["y"] - (v.y + dims[1]),
-        "up": lambda v, cam, dims: v.y - cam["y"],
-    }
-
-    for direction in zone_directions:
-        scan_zone = DEFAULT_SCAN_ZONE_CONFIG[direction]
-        camera = scan_zone["camera"]
-        zone = scan_zone["zone"]
-        vehicles_in_zone = []
-        calculate_distance_lambda = distance_calculators[direction]
-
-        for d in direction_numbers.values():
-            for lane in range(3):
-                for vehicle in vehicles[d][lane]:
-                    try:
-                        vehicle_left = vehicle.x
-                        vehicle_top = vehicle.y
-
-                        # Get dimensions: Use image rect if available, else use fallback dict
-                        if hasattr(vehicle, "image") and vehicle.image is not None:
-                            vehicle_width = vehicle.image.get_rect().width
-                            vehicle_height = vehicle.image.get_rect().height
-                        else:
-                            vehicle_width, vehicle_height = fallback_dimensions.get(
-                                vehicle.vehicleClass, default_dims
-                            )
-                        current_dims = (vehicle_width, vehicle_height)
-
-                        vehicle_right = vehicle_left + vehicle_width
-                        vehicle_bottom = vehicle_top + vehicle_height
-
-                        in_zone = not (
-                            vehicle_right < zone["x1"]
-                            or vehicle_left > zone["x2"]
-                            or vehicle_bottom < zone["y1"]
-                            or vehicle_top > zone["y2"]
-                        )
-
-                        # Calculate distance using the appropriate function and current dims
-                        distance = calculate_distance_lambda(
-                            vehicle, camera, current_dims
-                        )
-
-                        if in_zone:
-                            vehicles_in_zone.append(
-                                {
-                                    "vehicle": vehicle,
-                                    "distance": abs(distance),
-                                    "speed": vehicle.speed,
-                                    "type": vehicle.vehicleClass,
-                                    "acceleration": (
-                                        1
-                                        if vehicle.accelerated
-                                        else (-1 if vehicle.decelerated else 0)
-                                    ),
-                                    "position": (vehicle.x, vehicle.y),
-                                }
-                            )
-                    except Exception as e:
-                        # logger.warning(f"Skipping vehicle due to error in zone calculation: {e}")
-                        continue
-        all_zone_vehicles.append(vehicles_in_zone)
-    return all_zone_vehicles

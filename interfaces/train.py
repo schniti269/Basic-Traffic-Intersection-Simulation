@@ -19,26 +19,26 @@ from shared.utils import (
     PERFORMANCE_MODE,
     # screenWidth, # Assuming these are defined below for now
     # screenHeight, # Assuming these are defined below for now
-    SpatialGrid,  # Import the new class
+    # SpatialGrid,  # REMOVED Import
 )
 from core.simulation.traffic_signal import initialize
 from core.simulation.vehicle import generateVehicles
 from core.agent.neural_model_01 import (
     # NeuralTrafficController, # Old REINFORCE class
     NeuralTrafficControllerPPO,  # New PPO class
-    get_vehicles_in_zones,
-    DEFAULT_SCAN_ZONE_CONFIG,
+    # get_vehicles_in_zones, # REMOVED
+    # DEFAULT_SCAN_ZONE_CONFIG, # REMOVED
 )
 
 # --- Configuration --- #
 MODEL_SAVE_DIR = "saved_models"
 STEPS_PER_EPOCH = 2500
-TOTAL_EPOCHS = 500
+TOTAL_EPOCHS = 5000
 SCREEN_WIDTH = 1400  # Define screen dimensions clearly
 SCREEN_HEIGHT = 800
-GRID_CELL_SIZE = (
-    100  # Size of grid cells for collision detection (tune based on vehicle sizes)
-)
+# GRID_CELL_SIZE = ( # REMOVED Constant
+#     100  # Size of grid cells for collision detection (tune based on vehicle sizes)
+# )
 
 # --- Simulation Environment Setup --- #
 if not PERFORMANCE_MODE:
@@ -79,8 +79,8 @@ def train_simulation():
     initialize()
     active_lights = [False] * noOfSignals  # Start with all red
 
-    # Initialize Spatial Grid
-    spatial_grid = SpatialGrid(SCREEN_WIDTH, SCREEN_HEIGHT, GRID_CELL_SIZE)
+    # Initialize Spatial Grid # REMOVED
+    # spatial_grid = SpatialGrid(SCREEN_WIDTH, SCREEN_HEIGHT, GRID_CELL_SIZE)
 
     # Start Vehicle Generation Thread
     thread = threading.Thread(name="generateVehicles", target=generateVehicles, args=())
@@ -109,11 +109,11 @@ def train_simulation():
     while running and total_steps < total_simulation_steps:
         current_epoch = neural_controller.current_epoch
 
-        # --- Clear and Populate Spatial Grid --- #
-        spatial_grid.clear()
-        for vehicle in simulation:
-            spatial_grid.insert(vehicle)
-        # --- End Grid Update ---
+        # --- Clear and Populate Spatial Grid --- # REMOVED
+        # spatial_grid.clear()
+        # for vehicle in simulation:
+        #     spatial_grid.insert(vehicle)
+        # --- End Grid Update --- # REMOVED
 
         # --- Metric Calculation --- #
         waiting_vehicles_this_step = 0
@@ -160,14 +160,14 @@ def train_simulation():
         for vehicle in list(simulation):  # Iterate over a copy for safe removal
             crashes_result = 0
             if not vehicle.crashed:
-                # Pass the *populated* spatial grid to the move function
+                # Pass the *populated* spatial grid to the move function # REMOVED spatial_grid argument
                 crashes_result = vehicle.move(
                     vehicles,
                     active_lights,
                     stopLines,
                     movingGap,
                     simulation,
-                    spatial_grid,
+                    # spatial_grid, # REMOVED Argument
                 )
                 crashes_this_step += crashes_result
                 # Check if vehicle crossed the line *during this move*
@@ -208,12 +208,13 @@ def train_simulation():
 
         # --- Neural Controller Update --- #
         # Get state based on vehicles *after* movement and removal
-        scan_zones = get_vehicles_in_zones(
-            directionNumbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG
-        )
+        # scan_zones = get_vehicles_in_zones( # REMOVED this call
+        #     directionNumbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG
+        # )
         # Controller update gets action for the *next* step based on current state & reward
         next_active_lights = neural_controller.update(
-            scan_zones,
+            # scan_zones, # REMOVED
+            simulation,  # PASSED the simulation group directly
             avg_speed,  # Avg speed from *before* move
             crashes_this_step,  # Crashes that happened *during* move
             sum_sq_waiting_time,  # Use sum of squares instead of count

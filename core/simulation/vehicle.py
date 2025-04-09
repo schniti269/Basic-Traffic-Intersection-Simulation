@@ -17,6 +17,7 @@ from shared.utils import (
     simulation,
     logger,
     directionNumbers,
+    PERFORMANCE_MODE,
 )
 
 # Default dimensions when rendering is off
@@ -155,6 +156,11 @@ class Vehicle(pygame.sprite.Sprite):
             x[direction][lane], y[direction][lane] = adjuster()
         # --- End Refactor ---
 
+        # --- Initialize self.rect --- #
+        self.rect = pygame.Rect(self.x, self.y, self.width, self.height)
+        logger.debug(f"Initialized rect for {self.id}: {self.rect}")
+        # --- End Initialize self.rect --- #
+
         simulation.add(self)
 
     def load_image_if_needed(self):
@@ -249,7 +255,6 @@ class Vehicle(pygame.sprite.Sprite):
         stopLines: dict,
         movingGap: int,
         simulation_group: pygame.sprite.Group,
-        spatial_grid=None,
     ):
         """
         Move the vehicle based on traffic signals, other vehicles, and turning.
@@ -360,19 +365,8 @@ class Vehicle(pygame.sprite.Sprite):
                 potential_x, potential_y, self.width, self.height
             )
 
-            # --- Collision Check (using Spatial Grid) ---
-            potential_colliders = []
-            if spatial_grid:
-                # Get potential colliders from the grid cells the potential_rect overlaps
-                potential_colliders = spatial_grid.query(potential_rect)
-                # Remove self from potential colliders immediately
-                potential_colliders.discard(self)
-            else:
-                # Fallback: Check against all vehicles if grid not available (slower)
-                logger.warning(
-                    "Spatial grid not provided to move(), falling back to slow collision check."
-                )
-                potential_colliders = simulation_group
+            # --- Collision Check (Default: Iterate through simulation_group) --- #
+            potential_colliders = simulation_group  # Directly use the simulation group
 
             # @cython.cfunc / @numba.jit (inner loop calculations)
             for other_vehicle in potential_colliders:
@@ -402,6 +396,21 @@ class Vehicle(pygame.sprite.Sprite):
             self.x = potential_x
             self.y = potential_y
             movement_occurred = True
+
+            # --- Update Position and Rect --- #
+            if self.direction == "right":
+                self.x += self.speed
+                self.rect.x = self.x  # Update rect x
+            elif self.direction == "left":
+                self.x -= self.speed
+                self.rect.x = self.x  # Update rect x
+            elif self.direction == "down":
+                self.y += self.speed
+                self.rect.y = self.y  # Update rect y
+            elif self.direction == "up":
+                self.y -= self.speed
+                self.rect.y = self.y  # Update rect y
+            # --- End Update Position --- #
 
         # --- Update Waiting Time / Acceleration / Emission (Refactored) --- #
         self.accelerated = False
