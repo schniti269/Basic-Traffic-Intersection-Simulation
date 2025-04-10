@@ -19,6 +19,7 @@ from shared.utils import (
     directionNumbers,
     PERFORMANCE_MODE,
 )
+from .collision_logic import check_collision
 
 # Default dimensions when rendering is off
 DEFAULT_DIMS = {
@@ -42,11 +43,43 @@ class Vehicle(pygame.sprite.Sprite):
         self.crossed = 0
         self.id = f"{direction}_{lane}_{len(vehicles[direction][lane])}"
 
-        # --- Consistently set dimensions first ---
-        self.width, self.height = DEFAULT_DIMS.get(vehicleClass, (40, 40))
-        logger.debug(
-            f"Initial dimensions for {self.id} ({vehicleClass}): {self.width}x{self.height}"
-        )
+        self.image = None
+        self.font = None
+        self.width, self.height = DEFAULT_DIMS.get(
+            vehicleClass, (40, 40)
+        )  # Start with defaults
+
+        # --- Load Image and Set Dimensions --- #
+        if pygame.display.get_init():
+            try:
+                path = "images/" + direction + "/" + vehicleClass + ".png"
+                loaded_image = pygame.image.load(path)
+                self.image = loaded_image
+                # *** Use actual image dimensions for physics and hitbox ***
+                self.width = loaded_image.get_rect().width
+                self.height = loaded_image.get_rect().height
+                self.font = pygame.font.Font(None, 24)
+                logger.debug(
+                    f"Using image dimensions for {self.id} ({vehicleClass}): {self.width}x{self.height}"
+                )
+            except pygame.error as e:
+                logger.error(
+                    f"Error loading image {path} or font: {e}. Using default dimensions {self.width}x{self.height}."
+                )
+                # Keep default dimensions if image loading fails
+                self.image = None
+                self.font = None
+        else:
+            # If not rendering, stick with default dimensions
+            logger.debug(
+                f"No display; using default dimensions for {self.id} ({vehicleClass}): {self.width}x{self.height}"
+            )
+        # --- Image loading attempt finished --- #
+
+        # --- Initialize self.rect *after* dimensions are set --- #
+        self.rect = pygame.Rect(self.x, self.y, self.width, self.height)
+        logger.debug(f"Initialized rect for {self.id}: {self.rect}")
+        # --- End Initialize self.rect --- #
 
         self.waiting_time = 0
         self.accelerated = False
@@ -64,36 +97,15 @@ class Vehicle(pygame.sprite.Sprite):
             self
         )  # Append self *after* index is calculated
 
-        self.image = None
-        self.font = None  # Initialize font as None
-
-        # Optionally load images and potentially adjust visual size if Pygame is active
-        if pygame.display.get_init():
-            try:
-                path = "images/" + direction + "/" + vehicleClass + ".png"
-                loaded_image = pygame.image.load(path)
-                # Check if loaded image size differs significantly from defaults
-                img_width = loaded_image.get_rect().width
-                img_height = loaded_image.get_rect().height
-                if img_width != self.width or img_height != self.height:
-                    logger.warning(
-                        f"Image {path} dimensions ({img_width}x{img_height}) differ from default ({self.width}x{self.height}). Physics uses defaults."
-                    )
-                self.image = loaded_image  # Store loaded image for rendering
-                self.font = pygame.font.Font(None, 24)
-            except pygame.error as e:
-                logger.error(
-                    f"Error loading image {path} or font: {e}. Rendering will use default dimensions."
-                )
-                self.image = None
-                self.font = None
-        # --- Dimensions are now set consistently regardless of rendering ---
-
-        # --- Refactored stop coordinate calculation ---
+        # --- Refactored stop coordinate calculation (uses self.width/height) ---
         stop_calculators = {
-            "right": lambda ahead: ahead.stop - ahead.width - stoppingGap,
+            "right": lambda ahead: ahead.stop
+            - self.width
+            - stoppingGap,  # Use self.width
             "left": lambda ahead: ahead.stop + ahead.width + stoppingGap,
-            "down": lambda ahead: ahead.stop - ahead.height - stoppingGap,
+            "down": lambda ahead: ahead.stop
+            - self.height
+            - stoppingGap,  # Use self.height
             "up": lambda ahead: ahead.stop + ahead.height + stoppingGap,
         }
         if (
@@ -101,35 +113,55 @@ class Vehicle(pygame.sprite.Sprite):
             and vehicles[direction][lane][self.index - 1].crossed == 0
         ):
             vehicle_ahead = vehicles[direction][lane][self.index - 1]
-            # Check if vehicle_ahead has the 'stop' attribute initialized
             if hasattr(vehicle_ahead, "stop"):
                 calculate_stop = stop_calculators.get(direction)
                 if calculate_stop:
-                    try:  # Add try-except just in case stop calculation fails for other reasons
-                        self.stop = calculate_stop(vehicle_ahead)
-                    except (
-                        AttributeError
-                    ):  # Catch potential errors within lambda if ahead state is unexpected
+                    try:
+                        # Check direction for correct attribute usage
+                        if (
+                            direction == "right"
+                        ):  # Vehicle ahead stops based on *its* front
+                            self.stop = (
+                                vehicle_ahead.stop - vehicle_ahead.width - stoppingGap
+                            )
+                        elif (
+                            direction == "left"
+                        ):  # Vehicle ahead stops based on *its* front
+                            self.stop = (
+                                vehicle_ahead.stop + vehicle_ahead.width + stoppingGap
+                            )
+                        elif (
+                            direction == "down"
+                        ):  # Vehicle ahead stops based on *its* front
+                            self.stop = (
+                                vehicle_ahead.stop - vehicle_ahead.height - stoppingGap
+                            )
+                        elif (
+                            direction == "up"
+                        ):  # Vehicle ahead stops based on *its* front
+                            self.stop = (
+                                vehicle_ahead.stop + vehicle_ahead.height + stoppingGap
+                            )
+                        else:
+                            self.stop = defaultStop[direction]  # Fallback
+
+                    except AttributeError:
                         logger.warning(
                             f"AttributeError calculating stop for {self.id} behind {vehicle_ahead.id}. Using default."
                         )
                         self.stop = defaultStop[direction]
                 else:
-                    self.stop = defaultStop[
-                        direction
-                    ]  # Fallback if direction not in calculators
+                    self.stop = defaultStop[direction]
             else:
-                # If vehicle_ahead doesn't have 'stop' yet, use default stop for this vehicle
                 logger.debug(
                     f"Vehicle ahead {vehicle_ahead.id} has no 'stop' attribute yet. Using default stop for {self.id}."
                 )
                 self.stop = defaultStop[direction]
         else:
-            # No vehicle ahead or the one ahead has crossed
             self.stop = defaultStop[direction]
         # --- End Refactor ---
 
-        # --- Refactored starting position adjustment ---
+        # --- Refactored starting position adjustment (uses self.width/height) ---
         start_pos_adjusters = {
             "right": lambda: (
                 x[direction][lane] - (self.width + stoppingGap),
@@ -150,16 +182,11 @@ class Vehicle(pygame.sprite.Sprite):
         }
         adjuster = start_pos_adjusters.get(direction)
         if adjuster:
-            # Note: This modifies the global 'x' and 'y' dictionaries directly,
-            # which might have side effects depending on how they are used elsewhere.
-            # Consider if a local adjustment or returning the adjusted value is safer.
-            x[direction][lane], y[direction][lane] = adjuster()
+            # Adjust the starting position for *this* vehicle instance
+            self.x, self.y = adjuster()
+            # DO NOT MODIFY GLOBAL x, y here - it caused issues
+            # x[direction][lane], y[direction][lane] = adjuster()
         # --- End Refactor ---
-
-        # --- Initialize self.rect --- #
-        self.rect = pygame.Rect(self.x, self.y, self.width, self.height)
-        logger.debug(f"Initialized rect for {self.id}: {self.rect}")
-        # --- End Initialize self.rect --- #
 
         simulation.add(self)
 
@@ -219,8 +246,15 @@ class Vehicle(pygame.sprite.Sprite):
     def render(self, screen):
         # Only render if image exists and Pygame display is active
         if self.image and pygame.display.get_init():
-            # Draw the vehicle
+            # Draw the vehicle image
             screen.blit(self.image, (self.x, self.y))
+
+            # --- Draw the hitbox (collision rectangle) --- #
+            # Use a distinct color, e.g., red, with some transparency or just outline
+            hitbox_color = (255, 0, 0)  # Red
+            # Draw the rectangle outline (width=1 for outline)
+            pygame.draw.rect(screen, hitbox_color, self.rect, 1)
+            # --- End Hitbox Drawing --- #
 
             # Only show waiting time if the vehicle is waiting and font is available
             if self.waiting_time > 0 and not self.crossed and self.font:
@@ -258,7 +292,7 @@ class Vehicle(pygame.sprite.Sprite):
     ):
         """
         Move the vehicle based on traffic signals, other vehicles, and turning.
-        Checks for collisions before finalizing movement.
+        Checks for collisions before finalizing movement using the centralized check_collision.
         Refactored to use dictionaries for direction logic.
 
         Args:
@@ -319,7 +353,9 @@ class Vehicle(pygame.sprite.Sprite):
             elif direction == "left":
                 crossed_check = lambda v: v.x < stopLines[direction]
                 if vehicle_ahead:
-                    clearance_check = lambda v, ahead: v.x > (ahead.x + movingGap)
+                    clearance_check = lambda v, ahead: v.x > (
+                        ahead.x + ahead.width + movingGap
+                    )
                 stop_condition = lambda v: v.x >= v.stop
                 potential_update = lambda v: (v.x - v.speed, v.y)
             elif direction == "up":
@@ -355,62 +391,44 @@ class Vehicle(pygame.sprite.Sprite):
             stop_condition(self) or self.crossed == 1 or is_light_green
         ) and vehicle_ahead_clear
 
+        # --- Pre-move Collision Check --- #
         if should_move:
-            potential_x, potential_y = potential_update(self)
-        # --- End Refactor ---
+            # Create a temporary vehicle state for collision checking
+            temp_vehicle = pygame.sprite.Sprite()  # Lightweight temp object
+            temp_vehicle.x = potential_update(self)[0]
+            temp_vehicle.y = potential_update(self)[1]
+            temp_vehicle.width = self.width
+            temp_vehicle.height = self.height
+            temp_vehicle.direction = self.direction
+            temp_vehicle.lane = self.lane
+            temp_vehicle.crashed = False  # Important: temp isn't crashed yet
+            temp_vehicle.id = self.id  # For logging in collision check
 
-        # --- Check for Collisions *before* moving --- #
-        if should_move:
-            potential_rect = pygame.Rect(
-                potential_x, potential_y, self.width, self.height
-            )
+            potential_colliders = simulation_group  # Check against all others
 
-            # --- Collision Check (Default: Iterate through simulation_group) --- #
-            potential_colliders = simulation_group  # Directly use the simulation group
-
-            # @cython.cfunc / @numba.jit (inner loop calculations)
             for other_vehicle in potential_colliders:
-                if (
-                    other_vehicle is self or other_vehicle.crashed
-                ):  # Double-check self removal
+                if other_vehicle is self:  # Don't check against self
                     continue
-                other_rect = pygame.Rect(
-                    other_vehicle.x,
-                    other_vehicle.y,
-                    other_vehicle.width,
-                    other_vehicle.height,
-                )
-                if potential_rect.colliderect(other_rect):
+
+                # Call the centralized collision logic
+                if check_collision(temp_vehicle, other_vehicle):
                     self.crashed = True
-                    other_vehicle.crashed = True
+                    other_vehicle.crashed = True  # Mark both as crashed
                     crashed_this_step = 1
-                    logger.warning(
-                        f"Collision! Vehicle {self.id} ({self.direction}) at ({potential_x:.1f},{potential_y:.1f}) "
-                        f"and Vehicle {other_vehicle.id} ({other_vehicle.direction}) at ({other_vehicle.x:.1f},{other_vehicle.y:.1f})"
-                    )
-                    should_move = False
-                    break
+                    # Logger message is now inside check_collision for context
+                    should_move = False  # Prevent movement if collision detected
+                    break  # Stop checking after first collision involving this vehicle
 
         # --- Finalize Movement (if no collision occurred) --- #
         if should_move:
-            self.x = potential_x
-            self.y = potential_y
+            # Apply the potential update calculated earlier
+            self.x, self.y = potential_update(self)
             movement_occurred = True
 
-            # --- Update Position and Rect --- #
-            if self.direction == "right":
-                self.x += self.speed
-                self.rect.x = self.x  # Update rect x
-            elif self.direction == "left":
-                self.x -= self.speed
-                self.rect.x = self.x  # Update rect x
-            elif self.direction == "down":
-                self.y += self.speed
-                self.rect.y = self.y  # Update rect y
-            elif self.direction == "up":
-                self.y -= self.speed
-                self.rect.y = self.y  # Update rect y
-            # --- End Update Position --- #
+            # --- Update Rect --- #
+            # Crucial to update rect *after* position is finalized
+            self.rect.topleft = (self.x, self.y)
+            # --- End Update Rect --- #
 
         # --- Update Waiting Time / Acceleration / Emission (Refactored) --- #
         self.accelerated = False

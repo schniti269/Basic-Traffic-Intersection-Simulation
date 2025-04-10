@@ -25,9 +25,7 @@ file_handler.setLevel(logging.DEBUG)  # Keep DEBUG level for file logging
 
 # Add console handler with reduced verbosity
 console_handler = logging.StreamHandler()
-console_handler.setLevel(
-    logging.WARNING
-)  # Further reduce to WARNING to minimize output
+console_handler.setLevel(logging.INFO)  # Further reduce to WARNING to minimize output
 
 # Create formatter and add it to the handlers
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")

@@ -239,7 +239,7 @@ class NeuralTrafficControllerPPO:  # Renamed class
 
         return np.array(state_features, dtype=np.float32)
 
-    # @tf.function # Can compile for faster inference
+    @tf.function  # Can compile for faster inference
     def get_action_and_value(self, state):
         """Get action, log probability, and value estimate for a given state."""
         if self.actor is None or self.critic is None:
@@ -267,6 +267,7 @@ class NeuralTrafficControllerPPO:  # Renamed class
         action_logits = self.actor(state_tensor, training=False)
         value = self.critic(state_tensor, training=False)[0, 0]
         action_probs = tf.sigmoid(action_logits)[0]
+        # Restore sampling and log_prob calculation
         action = tf.cast(
             tf.random.uniform(shape=(self.output_size,)) < action_probs,
             dtype=tf.float32,
@@ -277,7 +278,8 @@ class NeuralTrafficControllerPPO:  # Renamed class
         ) * tf.math.log(1.0 - probs_tensor)
         log_prob = tf.reduce_sum(log_probs_all)
 
-        return action.numpy(), log_prob.numpy(), value.numpy()
+        # Return original tuple: sampled action, log_prob, value
+        return action, log_prob, value
 
     def calculate_step_reward(
         self,
@@ -292,10 +294,10 @@ class NeuralTrafficControllerPPO:  # Renamed class
         """
         # --- Weights (Tunable) ---
         speed_reward_weight = 2.0  # Encourage smooth flow, less emphasis than before
-        waiting_penalty_weight = -0.1  # Penalize SUM of SQUARED wait times
-        emission_penalty_weight = 0  # Slightly increased penalty
+        waiting_penalty_weight = -1.0  # Penalize SUM of SQUARED wait times
+        emission_penalty_weight = -1.0  # Slightly increased penalty
         crash_penalty = -100.0  # Reduced magnitude, still significant
-        throughput_reward_weight = +1.0  # Positive reward for clearing intersection
+        throughput_reward_weight = 5.0  # Positive reward for clearing intersection
 
         reward = 0.0
         # Positive Rewards
@@ -609,13 +611,13 @@ class NeuralTrafficControllerPPO:  # Renamed class
                 )
 
         # 4. Get the action and value for the *current* state
+        # Revert to expecting action, log_prob, value
         action, action_log_prob, value = self.get_action_and_value(current_state)
-        next_active_lights = [
-            bool(a > 0.5) for a in action
-        ]  # Convert action probabilities/logits back to bool lights
+        next_active_lights = [bool(a > 0.5) for a in action]  # Use sampled action
 
         # 5. Update 'last' variables for the next iteration
         self.last_state = current_state
+        # Revert to storing sampled action and its log_prob
         self.last_action = action
         self.last_action_log_prob = action_log_prob
         self.last_value = value
@@ -652,25 +654,31 @@ class NeuralTrafficControllerPPO:  # Renamed class
         else:
             logger.warning("Attempted to save PPO models, but one or both are None.")
 
-    def load_model(self, filepath_prefix):
-        """Loads actor and critic model weights."""
-        if self.actor and self.critic:
+    def load_models(self, filepath_prefix):
+        """Loads BOTH the actor and critic models from files using a common prefix."""
+        actor_path = f"{filepath_prefix}_actor.weights.h5"
+        critic_path = f"{filepath_prefix}_critic.weights.h5"
+        print(f"Attempting to load actor from: {actor_path}")
+        print(f"Attempting to load critic from: {critic_path}")
+
+        if os.path.exists(actor_path) and os.path.exists(critic_path):
             try:
-                actor_path = f"{filepath_prefix}_actor.weights.h5"
-                critic_path = f"{filepath_prefix}_critic.weights.h5"
-                if os.path.exists(actor_path) and os.path.exists(critic_path):
-                    self.actor.load_weights(actor_path)
-                    self.critic.load_weights(critic_path)
-                    logger.info(f"PPO models loaded from {filepath_prefix} prefix")
-                else:
-                    logger.error(
-                        f"Cannot load PPO models: File(s) not found for prefix {filepath_prefix}"
-                    )
+                self.actor.load_weights(actor_path)
+                print("Actor model loaded successfully.")
             except Exception as e:
-                logger.error(
-                    f"Error loading PPO models from {filepath_prefix}: {e}. Ensure architecture matches."
-                )
+                print(f"Error loading actor model weights: {e}")
+                # Consider whether to proceed if only one loads
+
+            try:
+                self.critic.load_weights(critic_path)
+                print("Critic model loaded successfully.")
+            except Exception as e:
+                print(f"Error loading critic model weights: {e}")
+                # Consider whether to proceed if only one loads
+
         else:
-            logger.error(
-                "Attempted to load PPO weights, but models are None. Build models first."
+            print(
+                "Could not find both actor and critic weight files for the given prefix."
             )
+            print(f"  Actor checked: {actor_path}")
+            print(f"  Critic checked: {critic_path}")
