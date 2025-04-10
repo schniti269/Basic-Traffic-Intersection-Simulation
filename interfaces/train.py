@@ -106,6 +106,9 @@ def train_simulation():
         disable=not PERFORMANCE_MODE,  # Disable tqdm if not in performance mode
     )
 
+    # --- Main Training Loop --- #
+    logger.info("Starting main training loop...")
+
     while running and total_steps < total_simulation_steps:
         current_epoch = neural_controller.current_epoch
 
@@ -206,21 +209,24 @@ def train_simulation():
                 pass
         # --- End Simulation Update --- #
 
-        # --- Neural Controller Update --- #
+        # --- Neural Controller Update (Call the original update method) --- #
         # Get state based on vehicles *after* movement and removal
-        # scan_zones = get_vehicles_in_zones( # REMOVED this call
-        #     directionNumbers, vehicles, DEFAULT_SCAN_ZONE_CONFIG
-        # )
-        # Controller update gets action for the *next* step based on current state & reward
+        # REMOVE the manual state/action/reward/store logic
+        # current_state = neural_controller.get_state(simulation)
+        # ... (removed action determination block) ...
+        # ... (removed reward calculation block) ...
+        # ... (removed store_transition block) ...
+        # ... (removed last_state update) ...
+        # ... (removed learn_ppo call - it happens inside update) ...
+
+        # Call the consolidated update method from the agent
         next_active_lights = neural_controller.update(
-            # scan_zones, # REMOVED
-            simulation,  # PASSED the simulation group directly
+            simulation,  # Pass the simulation group
             avg_speed,  # Avg speed from *before* move
             crashes_this_step,  # Crashes that happened *during* move
             sum_sq_waiting_time,  # Use sum of squares instead of count
             emissions_this_step,  # Emissions calculated *before* move
             newly_crossed_count,  # Pass number of vehicles that crossed this step
-            # vehicle_count was unused, replacing with newly_crossed_count
         )
         # --- End Neural Controller Update --- #
 
