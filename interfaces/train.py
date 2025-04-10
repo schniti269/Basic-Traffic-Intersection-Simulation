@@ -26,13 +26,14 @@ from core.simulation.vehicle import generateVehicles
 from core.agent.neural_model_01 import (
     # NeuralTrafficController, # Old REINFORCE class
     NeuralTrafficControllerPPO,  # New PPO class
+    UPDATE_EVERY_N_STEPS,  # Import the constant
     # get_vehicles_in_zones, # REMOVED
     # DEFAULT_SCAN_ZONE_CONFIG, # REMOVED
 )
 
 # --- Configuration --- #
 MODEL_SAVE_DIR = "saved_models"
-STEPS_PER_EPOCH = 2500
+STEPS_PER_EPOCH = 6000
 TOTAL_EPOCHS = 5000
 SCREEN_WIDTH = 1400  # Define screen dimensions clearly
 SCREEN_HEIGHT = 800
@@ -242,6 +243,11 @@ def train_simulation():
 
             # Now end the epoch (resets metrics, PPO training happens in update)
             neural_controller.end_epoch()
+            # Reset the simulation at the end of each epoch
+            reset_simulation()
+            logger.info(
+                f"Epoch {current_epoch} finished and simulation reset."
+            )  # Optional: Add log
         # --- End Training Epoch Check --- #
 
         # Apply the determined action for the next simulation step
@@ -267,6 +273,30 @@ def train_simulation():
     final_save_path_prefix = os.path.join(MODEL_SAVE_DIR, final_save_prefix)
     neural_controller.save_model(final_save_path_prefix)
     logger.info(f"Final PPO models saved with prefix {final_save_path_prefix}")
+
+
+def reset_simulation():
+    """Resets the simulation environment to an initial state."""
+    logger.info("Resetting simulation environment...")
+    global simulation, vehicles, waiting_times  # Ensure we modify the global instances
+
+    # Clear vehicle collections
+    simulation.empty()  # Clear the Pygame sprite group
+    for direction in vehicles:
+        vehicles[direction] = {
+            0: [],
+            1: [],
+            2: [],
+            "crossed": [],
+        }  # Reset vehicle dictionary
+    for direction in waiting_times:
+        waiting_times[direction] = {}  # Reset waiting times dictionary
+
+    # Re-initialize traffic signals (optional, but good for clean state)
+    # initialize() # Consider if signal state should also reset
+
+    # Note: Vehicle generation thread continues, it will repopulate.
+    logger.info("Simulation environment reset.")
 
 
 # --- Main Execution --- #

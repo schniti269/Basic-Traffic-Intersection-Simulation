@@ -18,14 +18,16 @@ import logging
 GAMMA = 0.99  # Discount factor
 GAE_LAMBDA = 0.95  # Lambda for Generalized Advantage Estimation
 CLIP_RATIO = 0.2  # PPO clipping ratio
-ACTOR_LR = 3e-4  # Actor learning rate
-CRITIC_LR = 1e-3  # Critic learning rate
-TRAIN_EPOCHS_PER_UPDATE = 10  # Number of optimization epochs per learning update
+ACTOR_LR = 3e-4  # Actor learning rate (Reduced)
+CRITIC_LR = 1e-3  # Critic learning rate (Reduced)
+TRAIN_EPOCHS_PER_UPDATE = (
+    10  # Number of optimization epochs per learning update (Increased)
+)
 TARGET_KL = 0.01  # Target KL divergence for early stopping
 REPLAY_BUFFER_SIZE = 20000  # Max size of the replay buffer
 MIN_BUFFER_SIZE = 1000  # Minimum transitions needed before learning starts
-UPDATE_EVERY_N_STEPS = 4000  # How often to run the learning update
-BATCH_SIZE = 64  # Batch size for sampling from buffer
+UPDATE_EVERY_N_STEPS = 2500  # How often to run the learning update (Aligned with Epoch)
+# BATCH_SIZE = 64  # REMOVED - Will process full buffer segment between updates
 # --- End PPO Hyperparameters --- #
 
 # --- New State Representation Config --- #
@@ -294,9 +296,9 @@ class NeuralTrafficControllerPPO:  # Renamed class
         """
         # --- Weights (Tunable) ---
         speed_reward_weight = 2.0  # Encourage smooth flow, less emphasis than before
-        waiting_penalty_weight = -1.0  # Penalize SUM of SQUARED wait times
-        emission_penalty_weight = -1.0  # Slightly increased penalty
-        crash_penalty = -100.0  # Reduced magnitude, still significant
+        waiting_penalty_weight = -5.0  # Penalize SUM of SQUARED wait times
+        emission_penalty_weight = -2.0  # Slightly increased penalty
+        crash_penalty = -5000.0  # SIGNIFICANTLY increased magnitude
         throughput_reward_weight = 5.0  # Positive reward for clearing intersection
 
         reward = 0.0
@@ -353,31 +355,22 @@ class NeuralTrafficControllerPPO:  # Renamed class
         return actor_loss, critic_loss, actor_grads, critic_grads, approx_kl
 
     def learn_ppo(self):
-        """Perform PPO learning update using data from the replay buffer."""
-        if (
-            len(self.replay_buffer) < BATCH_SIZE
-            or len(self.replay_buffer) < MIN_BUFFER_SIZE
-        ):
-            # print("Buffer too small, skipping learning.")
-            return  # Not enough data yet
+        """Perform PPO learning update using data collected since the last update."""
+        if len(self.replay_buffer) < MIN_BUFFER_SIZE:
+            logger.warning(
+                f"Buffer size ({len(self.replay_buffer)}) is less than MIN_BUFFER_SIZE ({MIN_BUFFER_SIZE}). Skipping learning."
+            )
+            return  # Not enough data accumulated yet
 
         if not PERFORMANCE_MODE:
             print(
-                f"Starting PPO Learning Update (Buffer size: {len(self.replay_buffer)})...",
+                f"Starting PPO Learning Update (Processing {len(self.replay_buffer)} transitions)...",
                 flush=True,
             )
 
-        # --- Sample a batch from the buffer --- #
-        # For simplicity, sample the whole buffer if it's small, or a random batch
-        batch_indices = np.random.choice(
-            len(self.replay_buffer),
-            size=min(BATCH_SIZE, len(self.replay_buffer)),
-            replace=False,
-        )
-        batch = [self.replay_buffer[i] for i in batch_indices]
-        # Alternatively, use the whole buffer for on-policy feel if UPDATE_EVERY_N_STEPS is tuned
-        # batch = list(self.replay_buffer)
-        # self.replay_buffer.clear() # Clear buffer after use for on-policy feel
+        # --- Use ALL data collected since the last update --- #
+        # No random sampling, process the entire buffer segment
+        batch = list(self.replay_buffer)
 
         states, actions, rewards, next_states, dones, log_probs_old, values_old = map(
             np.array, zip(*batch)
@@ -454,11 +447,10 @@ class NeuralTrafficControllerPPO:  # Renamed class
                 flush=True,
             )
 
-        # Clear buffer if using on-policy style update
-        if BATCH_SIZE >= len(
-            self.replay_buffer
-        ):  # Heuristic: if we likely used the whole buffer
-            self.replay_buffer.clear()
+        # Clear the buffer segment after processing it
+        self.replay_buffer.clear()
+        if not PERFORMANCE_MODE:
+            print(f"  Replay buffer cleared.", flush=True)
 
     def end_epoch(self):  # Kept for reporting and rendering logic
         """Handle end of epoch logic, primarily for reporting and triggering renders."""
