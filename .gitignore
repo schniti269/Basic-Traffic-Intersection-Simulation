@@ -98,3 +98,6 @@ ENV/
 
 #pyCharm code
 .idea/
+
+.venv/
+/venv/

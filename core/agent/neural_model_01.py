@@ -37,59 +37,6 @@ FLAT_STATE_SIZE = MAX_VEHICLES * VEHICLE_FEATURES
 INTERSECTION_CENTER_X = 700  # Approx center based on typical 1400 width
 INTERSECTION_CENTER_Y = 400  # Approx center based on typical 800 height
 # --- End New State Config --- #
-
-# Default scan zone config (changed to dictionary)
-DEFAULT_SCAN_ZONE_CONFIG = {
-    "right": {
-        "zone": {
-            "x1": 811,  # Left edge
-            "y1": 427,  # Top edge
-            "x2": 1400,  # Right edge
-            "y2": 512,  # Bottom edge
-        },
-        "camera": {
-            "x": 787,  # Camera x position
-            "y": 464,  # Camera y position
-        },
-    },
-    "left": {
-        "zone": {
-            "x1": 0,  # Left edge
-            "y1": 370,  # Top edge
-            "x2": 580,  # Right edge
-            "y2": 424,  # Bottom edge
-        },
-        "camera": {
-            "x": 600,  # Camera x position
-            "y": 400,  # Camera y position
-        },
-    },
-    "down": {
-        "zone": {
-            "x1": 600,  # Left edge
-            "y1": 546,  # Top edge
-            "x2": 681,  # Right edge
-            "y2": 800,  # Bottom edge
-        },
-        "camera": {
-            "x": 730,  # Camera x position
-            "y": 330,  # Camera y position
-        },
-    },
-    "up": {
-        "zone": {
-            "x1": 688,  # Left edge
-            "y1": 0,  # Top edge
-            "x2": 767,  # Right edge
-            "y2": 321,  # Bottom edge
-        },
-        "camera": {
-            "x": 650,  # Camera x position
-            "y": 310,  # Camera y position
-        },
-    },
-}
-
 logger = logging.getLogger(__name__)
 
 
@@ -295,11 +242,11 @@ class NeuralTrafficControllerPPO:  # Renamed class
         Refined to penalize squared wait time and reward throughput.
         """
         # --- Weights (Tunable) ---
-        speed_reward_weight = 2.0  # Encourage smooth flow, less emphasis than before
-        waiting_penalty_weight = -5.0  # Penalize SUM of SQUARED wait times
-        emission_penalty_weight = -2.0  # Slightly increased penalty
-        crash_penalty = -5000.0  # SIGNIFICANTLY increased magnitude
-        throughput_reward_weight = 5.0  # Positive reward for clearing intersection
+        speed_reward_weight = 2.0       # Encourage smooth flow
+        waiting_penalty_weight = -0.2 * sum_sq_waiting_time  # Penalize SUM of SQUARED wait times
+        emission_penalty_weight = -5.0  # Emissions penalty
+        crash_penalty = -10000.0        # DRASTISCH HÖHERE Strafe für Kollisionen
+        throughput_reward_weight = 50.0 # Positive reward for clearing intersection
 
         reward = 0.0
         # Positive Rewards
@@ -307,12 +254,9 @@ class NeuralTrafficControllerPPO:  # Renamed class
         reward += throughput_reward_weight * newly_crossed_count
 
         # Penalties
-        reward += waiting_penalty_weight  # Penalizes long waits more heavily
+        reward += waiting_penalty_weight  # Individuell berechnet basierend auf sum_sq_waiting_time
         reward += emission_penalty_weight * emissions_this_step
-        reward += crash_penalty * crashes_this_step
-
-        # Clip reward to avoid extreme values (optional, helps stabilize learning)
-        # reward = np.clip(reward, -100.0, 50.0)
+        reward += crash_penalty * crashes_this_step  # Diese Strafe sollte jetzt viel drastischer sein
 
         return reward
 
