@@ -175,12 +175,25 @@ def update_simulation(active_lights):
 
 
 def reset_agent(neural_controller):
-    """Setzt den internen Zustand des Agenten zurück."""
+    """Setzt nur den episodischen Zustand des Agenten zurück, behält aber das gelernte Modell.
+    Dies verbessert die Konvergenz erheblich, da das Training über Epochen hinweg fortgesetzt wird.
+    """
+    # Nur die temporären Zustandsvariablen zurücksetzen, aber die Modellgewichte behalten
     neural_controller.last_state = np.zeros(neural_controller.input_size)
     neural_controller.last_action = None
     neural_controller.last_action_log_prob = None
     neural_controller.last_value = None
-    neural_controller.replay_buffer.clear()
+    
+    # Replay-Buffer nicht komplett leeren, sondern nur sicherstellen, dass er nicht zu groß wird
+    # Dies ermöglicht Kontinuität im Lernen zwischen Epochen
+    if len(neural_controller.replay_buffer) > neural_controller.replay_buffer.maxlen // 2:
+        # Behalte die Hälfte der neuesten Erfahrungen
+        keep_count = neural_controller.replay_buffer.maxlen // 2
+        temp_buffer = list(neural_controller.replay_buffer)[-keep_count:]
+        neural_controller.replay_buffer.clear()
+        for experience in temp_buffer:
+            neural_controller.replay_buffer.append(experience)
+        logger.info(f"Retained {len(neural_controller.replay_buffer)} experiences between epochs")
     
     return neural_controller
 

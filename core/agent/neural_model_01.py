@@ -17,17 +17,14 @@ import logging
 # --- PPO Hyperparameters --- #
 GAMMA = 0.99  # Discount factor
 GAE_LAMBDA = 0.95  # Lambda for Generalized Advantage Estimation
-CLIP_RATIO = 0.2  # PPO clipping ratio
-ACTOR_LR = 3e-4  # Actor learning rate (Reduced)
-CRITIC_LR = 1e-3  # Critic learning rate (Reduced)
-TRAIN_EPOCHS_PER_UPDATE = (
-    10  # Number of optimization epochs per learning update (Increased)
-)
-TARGET_KL = 0.01  # Target KL divergence for early stopping
+CLIP_RATIO = 0.15  # PPO clipping ratio - reduziert für höhere Stabilität
+ACTOR_LR = 1e-4  # Actor learning rate (weiter reduziert)
+CRITIC_LR = 5e-4  # Critic learning rate (weiter reduziert)
+TRAIN_EPOCHS_PER_UPDATE = 8  # Number of optimization epochs (reduziert)
+TARGET_KL = 0.015  # Target KL divergence - etwas erhöht für weniger konservatives Lernen
 REPLAY_BUFFER_SIZE = 20000  # Max size of the replay buffer
-MIN_BUFFER_SIZE = 1000  # Minimum transitions needed before learning starts
-UPDATE_EVERY_N_STEPS = 2500  # How often to run the learning update (Aligned with Epoch)
-# BATCH_SIZE = 64  # REMOVED - Will process full buffer segment between updates
+MIN_BUFFER_SIZE = 2000  # Minimum transitions needed before learning starts (erhöht)
+UPDATE_EVERY_N_STEPS = 1000  # How often to run the learning update (reduziert für häufigere Updates)
 # --- End PPO Hyperparameters --- #
 
 # --- New State Representation Config --- #
@@ -91,38 +88,45 @@ class NeuralTrafficControllerPPO:  # Renamed class
         self.last_action = None
 
     def _build_actor_critic_models(self):
-        """Builds separate Actor (policy) and Critic (value) networks."""
+        """Builds separate Actor (policy) and Critic (value) networks mit erweiterten Layers für Stabilität."""
         # Input Layer - Now expecting a flat vector
         input_layer = Input(shape=(self.input_size,), name="flat_state_input")
-
-        # Shared layers (or direct connection)
-        # Using the flat input directly
-        shared_dense1 = Dense(256, activation="relu")(input_layer)
-        shared_dense2 = Dense(128, activation="relu")(shared_dense1)
+        
+        # Normalisierungsschicht für stabile Eingaben
+        normalized = tf.keras.layers.BatchNormalization()(input_layer)
+        
+        # Shared layers - tieferes Netzwerk mit mehr Regularisierung
+        shared_dense1 = Dense(256, activation="relu", 
+                             kernel_regularizer=tf.keras.regularizers.l2(0.001))(normalized)
+        dropout1 = tf.keras.layers.Dropout(0.1)(shared_dense1)
+        shared_dense2 = Dense(128, activation="relu",
+                             kernel_regularizer=tf.keras.regularizers.l2(0.001))(dropout1)
+        dropout2 = tf.keras.layers.Dropout(0.1)(shared_dense2)
 
         # --- Actor Head ---
+        actor_dense = Dense(64, activation="relu")(dropout2)
         # Outputs logits for each action dimension (traffic light)
         action_logits = Dense(self.output_size, activation=None, name="action_logits")(
-            shared_dense2
+            actor_dense
         )
         actor = Model(inputs=input_layer, outputs=action_logits)
 
         # --- Critic Head ---
+        critic_dense = Dense(64, activation="relu")(dropout2)
         # Outputs a single value representing the estimated state value
-        state_value = Dense(1, activation=None, name="state_value")(shared_dense2)
+        state_value = Dense(1, activation=None, name="state_value")(critic_dense)
         critic = Model(inputs=input_layer, outputs=state_value)
 
         return actor, critic
 
-    def get_state(self, vehicles):  # CHANGED Input argument
-        """Convert vehicle group data into a flat state vector.
+    def get_state(self, vehicles):
+        """Convert vehicle group data into a flat state vector with optimierter Repräsentation.
 
         Args:
             vehicles: A pygame.sprite.Group containing Vehicle objects.
 
         Returns:
-            A flat NumPy array representing the state, sorted by distance
-            and padded/truncated to MAX_VEHICLES. Shape: (FLAT_STATE_SIZE,).
+            A flat NumPy array representing the state.
         """
         state_features = []
         center_x = INTERSECTION_CENTER_X
@@ -131,60 +135,68 @@ class NeuralTrafficControllerPPO:  # Renamed class
         if not vehicles:  # Handle empty group
             return np.zeros(self.input_size)
 
-        vehicle_data_list = []
+        # Zonen für die 4 Richtungen festlegen, statt nach Distanz zu sortieren
+        zones = {
+            "right": [],  # Fahrzeuge von rechts kommend
+            "down": [],   # Fahrzeuge von oben kommend
+            "left": [],   # Fahrzeuge von links kommend
+            "up": []      # Fahrzeuge von unten kommend
+        }
 
+        # Fahrzeuge nach Zonen gruppieren
         for vehicle in vehicles:
             if vehicle.crashed:  # Skip crashed vehicles
                 continue
 
             try:
-                # Calculate features relative to the intersection center
+                # Grundlegende Fahrzeugeigenschaften extrahieren
                 dx = vehicle.rect.centerx - center_x
                 dy = vehicle.rect.centery - center_y
                 distance = math.sqrt(dx**2 + dy**2)
                 angle = math.atan2(dy, dx)  # Radians from -pi to pi
-                speed = vehicle.speed
-                wait_time = vehicle.waiting_time
-
-                # Store distance along with features for sorting
-                vehicle_data_list.append(
-                    (distance, [distance, speed, wait_time, angle])
-                )
-
+                speed = min(vehicle.speed, 5.0) / 5.0  # Normalisiert auf [0,1]
+                wait_time = min(vehicle.waiting_time, 50.0) / 50.0  # Normalisiert auf [0,1]
+                
+                # Fahrzeug in die richtige Zone einsortieren
+                if hasattr(vehicle, 'direction'):
+                    direction = vehicle.direction
+                    if direction in zones:
+                        zones[direction].append([
+                            distance, 
+                            speed,
+                            wait_time,
+                            angle
+                        ])
             except AttributeError as e:
-                logger.error(
-                    f"Error accessing vehicle attributes: {e}. Vehicle: {vehicle}"
-                )
-                continue  # Skip vehicles with missing attributes
+                logger.error(f"Error accessing vehicle attributes: {e}. Vehicle: {vehicle}")
+                continue
 
-        # Sort vehicles by distance (ascending)
-        vehicle_data_list.sort(key=lambda x: x[0])
+        # Jede Zone sortieren und maximal (MAX_VEHICLES // 4) Fahrzeuge pro Zone nehmen
+        vehicles_per_zone = MAX_VEHICLES // 4
+        for direction in zones:
+            # Nach Distanz sortieren (nächste zuerst)
+            zones[direction].sort(key=lambda x: x[0])
+            
+            # Nur die nächsten N Fahrzeuge dieser Zone verwenden
+            for i in range(min(len(zones[direction]), vehicles_per_zone)):
+                # Alle Features des Fahrzeugs hinzufügen
+                state_features.extend(zones[direction][i])
+            
+            # Padding für diese Zone, wenn weniger als max Fahrzeuge
+            padding_needed = vehicles_per_zone - min(len(zones[direction]), vehicles_per_zone)
+            if padding_needed > 0:
+                state_features.extend([0.0] * (padding_needed * VEHICLE_FEATURES))
 
-        # Extract features for the closest MAX_VEHICLES
-        num_vehicles_to_include = min(len(vehicle_data_list), MAX_VEHICLES)
-        for i in range(num_vehicles_to_include):
-            # Append the feature list: [distance, speed, wait_time, angle]
-            state_features.extend(vehicle_data_list[i][1])
-
-        # Pad with zeros if fewer than MAX_VEHICLES
-        num_padding_features = (
-            MAX_VEHICLES - num_vehicles_to_include
-        ) * VEHICLE_FEATURES
-        state_features.extend([0.0] * num_padding_features)
-
-        # Ensure the final state has the correct size, clip if necessary (safety net)
-        if len(state_features) > self.input_size:
+        # Konsistenzprüfung für die Vektorlänge
+        if len(state_features) != self.input_size:
             logger.warning(
-                f"Calculated state features ({len(state_features)}) exceed expected input size ({self.input_size}). Clipping."
+                f"State size mismatch. Got {len(state_features)}, expected {self.input_size}."
+                f"Adding padding/truncating."
             )
-            state_features = state_features[: self.input_size]
-        elif len(state_features) < self.input_size:
-            # This case should be handled by padding, but log if it occurs
-            logger.error(
-                f"Calculated state features ({len(state_features)}) less than expected input size ({self.input_size}) after padding."
-            )
-            # Pad again just in case
-            state_features.extend([0.0] * (self.input_size - len(state_features)))
+            if len(state_features) < self.input_size:
+                state_features.extend([0.0] * (self.input_size - len(state_features)))
+            else:
+                state_features = state_features[:self.input_size]
 
         return np.array(state_features, dtype=np.float32)
 
@@ -239,26 +251,35 @@ class NeuralTrafficControllerPPO:  # Renamed class
         newly_crossed_count,
     ):
         """Calculate the raw reward for the current simulation step.
-        Refined to penalize squared wait time and reward throughput.
+        Optimierte Belohnungsfunktion mit angepassten Gewichtungen für stabilere Konvergenz.
         """
         # --- Weights (Tunable) ---
-        speed_reward_weight = 2.0       # Encourage smooth flow
-        waiting_penalty_weight = -0.2 * sum_sq_waiting_time  # Penalize SUM of SQUARED wait times
-        emission_penalty_weight = -5.0  # Emissions penalty
-        crash_penalty = -10000.0        # DRASTISCH HÖHERE Strafe für Kollisionen
-        throughput_reward_weight = 50.0 # Positive reward for clearing intersection
+        speed_reward_weight = 1.0        # Reduziert von 2.0 für bessere Balance
+        waiting_penalty_weight = -0.05   # Reduziert von -0.2 für weniger drastische Bestrafung
+        emission_penalty_weight = -1.0   # Reduziert von -5.0
+        crash_penalty = -100.0           # Drastisch reduziert von -10000.0 für stabileres Training
+        throughput_reward_weight = 20.0  # Reduziert von 50.0 für weniger Übergewichtung
 
+        # Clip Werte um extreme Ausreißer zu vermeiden
+        sum_sq_waiting_time = min(sum_sq_waiting_time, 1000)  # Verhindert zu große Wartezeit-Strafen
+        emissions_this_step = min(emissions_this_step, 50)    # Begrenzt Emissionsstrafen
+        
+        # Normalisierung für konsistentere Belohnungen
+        normalized_speed = min(avg_speed, 5.0) / 5.0  # Normalisiert auf [0,1]
+        
         reward = 0.0
         # Positive Rewards
-        reward += speed_reward_weight * avg_speed
+        reward += speed_reward_weight * normalized_speed
         reward += throughput_reward_weight * newly_crossed_count
 
         # Penalties
-        reward += waiting_penalty_weight  # Individuell berechnet basierend auf sum_sq_waiting_time
+        waiting_penalty = waiting_penalty_weight * sum_sq_waiting_time
+        reward += waiting_penalty
         reward += emission_penalty_weight * emissions_this_step
-        reward += crash_penalty * crashes_this_step  # Diese Strafe sollte jetzt viel drastischer sein
-
-        return reward
+        reward += crash_penalty * crashes_this_step
+        
+        # Reward-Clipping für stabilere Gradienten
+        return np.clip(reward, -200.0, 200.0)
 
     def store_transition(
         self, state, action, reward, next_state, done, log_prob, value

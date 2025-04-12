@@ -27,7 +27,7 @@ from shared.simulation_core import (
 
 # --- Configuration --- #
 MODEL_SAVE_DIR = "saved_models"
-STEPS_PER_EPOCH = 6000
+STEPS_PER_EPOCH = 10000  # Erhöht von 6000 für längere Lernphasen ohne Reset
 TOTAL_EPOCHS = 5000
 
 # --- Simulation Environment Setup --- #
