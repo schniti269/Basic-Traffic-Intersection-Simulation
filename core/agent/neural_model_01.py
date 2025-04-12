@@ -251,14 +251,19 @@ class NeuralTrafficControllerPPO:  # Renamed class
         newly_crossed_count,
     ):
         """Calculate the raw reward for the current simulation step.
-        Optimierte Belohnungsfunktion mit angepassten Gewichtungen für stabilere Konvergenz.
+        Optimierte Belohnungsfunktion mit Fokus auf hohen Durchsatz (viele Fahrzeuge mit guter Geschwindigkeit).
         """
+        # Aktuelle Zustandsdaten aus dem Simulationsschritt
+        vehicle_count = len(self.get_current_vehicle_count())  # Gesamtzahl der Fahrzeuge in der Simulation
+        
         # --- Weights (Tunable) ---
-        speed_reward_weight = 1.0        # Reduziert von 2.0 für bessere Balance
-        waiting_penalty_weight = -0.05   # Reduziert von -0.2 für weniger drastische Bestrafung
-        emission_penalty_weight = -1.0   # Reduziert von -5.0
-        crash_penalty = -100.0           # Drastisch reduziert von -10000.0 für stabileres Training
-        throughput_reward_weight = 20.0  # Reduziert von 50.0 für weniger Übergewichtung
+        # Statt nur die Durchschnittsgeschwindigkeit zu belohnen, belohnen wir den Gesamtdurchsatz:
+        # (durchschnittliche Geschwindigkeit × Anzahl der Fahrzeuge)
+        throughput_weight = 0.2            # Belohnung für Gesamtdurchsatz (Geschwindigkeit × Fahrzeuganzahl)
+        waiting_penalty_weight = -0.02     # Reduziert für bessere Balance
+        emission_penalty_weight = -0.5     # Reduziert für bessere Balance
+        crash_penalty = -100.0             # Unverändert
+        crossing_reward_weight = 15.0      # Belohnung für Fahrzeuge, die die Kreuzung überqueren
 
         # Clip Werte um extreme Ausreißer zu vermeiden
         sum_sq_waiting_time = min(sum_sq_waiting_time, 1000)  # Verhindert zu große Wartezeit-Strafen
@@ -268,11 +273,16 @@ class NeuralTrafficControllerPPO:  # Renamed class
         normalized_speed = min(avg_speed, 5.0) / 5.0  # Normalisiert auf [0,1]
         
         reward = 0.0
-        # Positive Rewards
-        reward += speed_reward_weight * normalized_speed
-        reward += throughput_reward_weight * newly_crossed_count
+        
+        # --- Hauptbelohnung: Durchsatz (Geschwindigkeit × Fahrzeuganzahl) ---
+        # Dies belohnt sowohl hohe Geschwindigkeit als auch die Verarbeitung vieler Fahrzeuge
+        throughput = normalized_speed * vehicle_count
+        reward += throughput_weight * throughput
+        
+        # --- Zusätzliche Belohnung für das erfolgreiche Überqueren der Kreuzung ---
+        reward += crossing_reward_weight * newly_crossed_count
 
-        # Penalties
+        # --- Strafen ---
         waiting_penalty = waiting_penalty_weight * sum_sq_waiting_time
         reward += waiting_penalty
         reward += emission_penalty_weight * emissions_this_step
@@ -280,6 +290,16 @@ class NeuralTrafficControllerPPO:  # Renamed class
         
         # Reward-Clipping für stabilere Gradienten
         return np.clip(reward, -200.0, 200.0)
+        
+    def get_current_vehicle_count(self):
+        """Hilfsmethode, um die Anzahl aktiver Fahrzeuge in der Simulation zu bestimmen."""
+        import pygame
+        # Globale Simulationsgruppe aus den Utility-Funktionen importieren
+        from shared.utils import simulation
+        
+        # Zähle nur nicht-gecrasht Fahrzeuge
+        active_vehicles = [v for v in simulation if hasattr(v, 'crashed') and not v.crashed]
+        return active_vehicles
 
     def store_transition(
         self, state, action, reward, next_state, done, log_prob, value
