@@ -68,6 +68,7 @@ class TrafficDQNAgent:
         self.last_state = None
         self.last_action = None
         self.current_action_duration = 0
+        self.epoch_just_completed = False  # Neu: Kennzeichnet, ob gerade eine Epoche beendet wurde
         
         # Metriken für Zusammenfassungen
         self.total_crashes_epoch = 0
@@ -312,6 +313,9 @@ class TrafficDQNAgent:
                 f"| {epoch_num_str:<15} | {reward_str} | {crashes_str} | {crosses_str} | {avg_speed_str} | Eps={self.epsilon:.4f} |",
                 flush=True,
             )
+        
+        # Signalisiere, dass eine Epoche gerade abgeschlossen wurde
+        self.epoch_just_completed = True
             
         self.current_epoch += 1
         
@@ -377,6 +381,12 @@ class TrafficDQNAgent:
         """Verarbeitet einen Schritt der Simulation und entscheidet über Ampelzustände.
         Mit Optimierungen für bessere Leistung.
         """
+        # Setze die epoch_just_completed-Flagge zurück, wenn sie gesetzt war
+        # Dies muss am Anfang passieren, damit die Flagge nur für einen Update-Zyklus aktiv ist
+        epoch_just_completed_flag = self.epoch_just_completed
+        if self.epoch_just_completed:
+            self.epoch_just_completed = False
+        
         # Aktuellen Zustand erhalten
         current_state = self.get_state(current_vehicles)
         

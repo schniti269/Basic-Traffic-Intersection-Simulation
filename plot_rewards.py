@@ -18,11 +18,24 @@ def extract_data_from_filename(filename):
         reward = int(ppo_match.group(2))
         return epoch, reward, "ppo"
         
-    # Neues Pattern für DQN-Modelle
-    dqn_match = re.match(r"dqn_model_epoch_(\d+)_reward_(-?\d+)_crashes_(\d+).*", filename)
+    # Pattern für DQN-Modelle mit dem Format "dqn_model_epoch_20_avg_reward_1144.01_speed_2.50_crashes_0.weights.h5"
+    dqn_match_avg = re.match(r"dqn_model_epoch_(\d+)_avg_reward_(-?\d+\.?\d*)_.*", filename)
+    if dqn_match_avg:
+        epoch = int(dqn_match_avg.group(1))
+        try:
+            reward = float(dqn_match_avg.group(2))
+        except ValueError:
+            reward = 0
+        return epoch, reward, "dqn"
+        
+    # Alternatives Pattern für DQN-Modelle mit einfachem "reward_" Format
+    dqn_match = re.match(r"dqn_model_epoch_(\d+)_reward_(-?\d+\.?\d*)_.*", filename)
     if dqn_match:
         epoch = int(dqn_match.group(1))
-        reward = int(dqn_match.group(2))
+        try:
+            reward = float(dqn_match.group(2))
+        except ValueError:
+            reward = 0
         return epoch, reward, "dqn"
         
     return None

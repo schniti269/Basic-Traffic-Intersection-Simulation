@@ -100,9 +100,10 @@ def train_simulation():
             newly_crossed_count,
         )
         
-        # --- Modell alle 20 Epochen speichern --- #
-        if dqn_agent.current_epoch > 0 and dqn_agent.current_epoch % 20 == 0 and dqn_agent.epoch_steps == 1:
-            # Durchschnittliche Belohnung pro Aktion berechnen - ein viel aussagekräftigerer Wert
+        # --- Modell nach jeder Epoche speichern --- #
+        # Prüfe, ob gerade eine Epoche abgeschlossen wurde
+        if hasattr(dqn_agent, 'epoch_just_completed') and dqn_agent.epoch_just_completed:
+            # Durchschnittliche Belohnung pro Aktion berechnen
             if dqn_agent.total_steps > 0:
                 avg_reward = dqn_agent.epoch_accumulated_reward / max(1, dqn_agent.epoch_steps)
             else:
@@ -111,8 +112,8 @@ def train_simulation():
             epoch_crashes = dqn_agent.total_crashes_epoch
             avg_speed = dqn_agent.sum_avg_speeds_epoch / max(1, dqn_agent.vehicle_updates_epoch)
             
-            # Informativerer Dateiname mit Durchschnittsbelohnung und Geschwindigkeit
-            save_prefix = f"dqn_model_epoch_{dqn_agent.current_epoch}_avg_reward_{avg_reward:.2f}_speed_{avg_speed:.2f}_crashes_{epoch_crashes}"
+            # Dateiname mit informativen Metriken
+            save_prefix = f"dqn_model_epoch_{dqn_agent.current_epoch}_reward_{avg_reward:.2f}_speed_{avg_speed:.2f}_crashes_{epoch_crashes}"
             save_path_prefix = os.path.join(MODEL_SAVE_DIR, save_prefix)
             dqn_agent.save_model(save_path_prefix)
             logger.info(f"Saved model checkpoint at epoch {dqn_agent.current_epoch} with avg reward: {avg_reward:.2f}")
@@ -133,7 +134,11 @@ def train_simulation():
     logger.info("Training finished.")
 
     # Speichere das finale Modell
-    final_save_prefix = f"dqn_model_final_epoch_{dqn_agent.current_epoch}_reward_{dqn_agent.epoch_accumulated_reward:.0f}_crashes_{dqn_agent.total_crashes_epoch}"
+    final_avg_reward = 0
+    if dqn_agent.total_steps > 0:
+        final_avg_reward = dqn_agent.epoch_accumulated_reward / max(1, dqn_agent.epoch_steps)
+    
+    final_save_prefix = f"dqn_model_epoch_{dqn_agent.current_epoch}_reward_{final_avg_reward:.2f}_crashes_{dqn_agent.total_crashes_epoch}"
     final_save_path_prefix = os.path.join(MODEL_SAVE_DIR, final_save_prefix)
     dqn_agent.save_model(final_save_path_prefix)
     logger.info(f"Final DQN model saved with prefix {final_save_path_prefix}")
