@@ -10,12 +10,10 @@ from shared.utils import (
     logger,
     noOfSignals,
     PERFORMANCE_MODE,
-    simulation,  # Wichtig: Füge simulation hier hinzu
+    simulation,
 )
-from core.agent.neural_model_01 import (
-    NeuralTrafficControllerPPO,
-    UPDATE_EVERY_N_STEPS,
-)
+# Importiere den neuen DQN-Agenten
+from core.agent.neural_model_03 import TrafficDQNAgent
 from shared.simulation_core import (
     reset_simulation,
     start_simulation_threads, 
@@ -27,12 +25,11 @@ from shared.simulation_core import (
 
 # --- Configuration --- #
 MODEL_SAVE_DIR = "saved_models"
-STEPS_PER_EPOCH = 10000  # Erhöht von 6000 für längere Lernphasen ohne Reset
+STEPS_PER_EPOCH = 5000  # Anzahl der Aktionen (nicht Ticks) pro Epoche
 TOTAL_EPOCHS = 5000
 
-# --- Simulation Environment Setup --- #
+# --- GPU Check und Konfiguration --- #
 if not PERFORMANCE_MODE:
-    # --- GPU Check --- #
     gpus = tf.config.list_physical_devices("GPU")
     if gpus:
         try:
@@ -46,45 +43,46 @@ if not PERFORMANCE_MODE:
             logger.error(f"GPU Memory Growth Error: {e}")
     else:
         logger.info("No GPU found, using CPU.")
-    # --- End GPU Check --- #
 
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
     logger.info(f"Starting training for {TOTAL_EPOCHS} epochs...")
 
 
 def train_simulation():
-    """Runs the traffic simulation training loop."""
-    # --- Initialization ---
+    """Führt das Trainingsprogramm für die Verkehrssimulation aus."""
+    # --- Initialisierung --- #
     if not os.path.exists(MODEL_SAVE_DIR):
         os.makedirs(MODEL_SAVE_DIR)
 
-    # PPO Controller
-    neural_controller = NeuralTrafficControllerPPO(
-        steps_per_epoch=STEPS_PER_EPOCH, total_epochs=TOTAL_EPOCHS
-    )
+    # DQN Agent für die Ampelsteuerung
+    dqn_agent = TrafficDQNAgent()
+    dqn_agent.steps_per_epoch = STEPS_PER_EPOCH
+    dqn_agent.total_epochs = TOTAL_EPOCHS
 
-    # Starte Simulationsthreads und initialisiere Ampeln auf rot
+    # Starte Simulationsthreads und initialisiere Ampeln
     active_lights = start_simulation_threads()
 
-    total_steps = 0
+    total_ticks = 0  # Zählt Simulationsticks (nicht Epoche-Aktionen)
     running = True
-
-    total_simulation_steps = TOTAL_EPOCHS * STEPS_PER_EPOCH
+    
+    # Gesamtzahl der Simulationsticks abschätzen (für Fortschrittsanzeige)
+    est_ticks_per_epoch = STEPS_PER_EPOCH * dqn_agent.action_delay  # ~ Ticks pro Epoche
+    total_simulation_ticks = TOTAL_EPOCHS * est_ticks_per_epoch
+    
+    # Fortschrittsanzeige
     pbar = tqdm(
-        total=total_simulation_steps,
+        total=total_simulation_ticks,
         desc="Training Progress",
-        unit="step",
+        unit="tick",
         mininterval=1.0,
-        disable=not PERFORMANCE_MODE,  # Disable tqdm if not in performance mode
+        disable=not PERFORMANCE_MODE,
     )
 
-    # --- Main Training Loop --- #
-    logger.info("Starting main training loop...")
+    # --- Haupt-Trainingsschleife --- #
+    logger.info("Starting main training loop with DQN controller...")
 
-    while running and total_steps < total_simulation_steps:
-        current_epoch = neural_controller.current_epoch
-
-        # --- Berechne Metriken vor der Bewegung --- #
+    while running and dqn_agent.current_epoch < TOTAL_EPOCHS:
+        # --- Berechne aktuelle Metriken --- #
         metrics = calculate_metrics()
 
         # --- Simulationsschritt ausführen --- #
@@ -92,9 +90,9 @@ def train_simulation():
         crashes_this_step = update_results["crashes_this_step"]
         newly_crossed_count = update_results["newly_crossed_count"]
 
-        # --- Neural Controller Update --- #
-        next_active_lights = neural_controller.update(
-            simulation,  # Globale Simulation gruppe
+        # --- Aktualisiere den DQN-Agent --- #
+        next_active_lights = dqn_agent.update(
+            simulation,
             metrics["avg_speed"],
             crashes_this_step,
             metrics["sum_sq_waiting_time"],
@@ -102,56 +100,51 @@ def train_simulation():
             newly_crossed_count,
         )
         
-        # --- Training Epoch Check & Model Saving --- #
-        if neural_controller.epoch_steps >= neural_controller.steps_per_epoch:
-            # Save model *before* end_epoch resets metrics used for filename
-            epoch_reward = neural_controller.epoch_accumulated_reward
-            epoch_crashes = neural_controller.total_crashes_epoch
-            # Use a prefix for saving actor/critic models
-            save_prefix = f"model_epoch_{current_epoch}_reward_{epoch_reward:.0f}_crashes_{epoch_crashes}"
+        # --- Modell alle 20 Epochen speichern --- #
+        if dqn_agent.current_epoch > 0 and dqn_agent.current_epoch % 20 == 0 and dqn_agent.epoch_steps == 1:
+            # Durchschnittliche Belohnung pro Aktion berechnen - ein viel aussagekräftigerer Wert
+            if dqn_agent.total_steps > 0:
+                avg_reward = dqn_agent.epoch_accumulated_reward / max(1, dqn_agent.epoch_steps)
+            else:
+                avg_reward = 0
+                
+            epoch_crashes = dqn_agent.total_crashes_epoch
+            avg_speed = dqn_agent.sum_avg_speeds_epoch / max(1, dqn_agent.vehicle_updates_epoch)
+            
+            # Informativerer Dateiname mit Durchschnittsbelohnung und Geschwindigkeit
+            save_prefix = f"dqn_model_epoch_{dqn_agent.current_epoch}_avg_reward_{avg_reward:.2f}_speed_{avg_speed:.2f}_crashes_{epoch_crashes}"
             save_path_prefix = os.path.join(MODEL_SAVE_DIR, save_prefix)
-            neural_controller.save_model(save_path_prefix)
-
-            # Now end the epoch (resets metrics, PPO training happens in update)
-            neural_controller.end_epoch()
-            
-            # Reset the simulation environment at the end of each epoch
-            reset_simulation()
-            
-            # Reset neural controller's internal state for clean start at each epoch
-            neural_controller = reset_agent(neural_controller)
-            
-            logger.info(
-                f"Epoch {current_epoch} finished and environment fully reset."
-            )
+            dqn_agent.save_model(save_path_prefix)
+            logger.info(f"Saved model checkpoint at epoch {dqn_agent.current_epoch} with avg reward: {avg_reward:.2f}")
         
-        # Apply the determined action for the next simulation step
+        # Wende die Ampelzustände für den nächsten Schritt an
         active_lights = next_active_lights
 
-        total_steps += 1
+        # Fortschritt aktualisieren
+        total_ticks += 1
         pbar.update(1)
+        
+        # Auf Leertaste warten, falls nötig
+        wait_for_space(dqn_agent)
 
-        # Warte auf Leertaste falls nötig
-        wait_for_space(neural_controller)
-
-    # --- End of Training Loop --- #
+    # --- Ende der Trainingsschleife --- #
     pbar.close()
 
     logger.info("Training finished.")
 
-    # Save the final model (using prefix)
-    final_save_prefix = f"model_final_epoch_{neural_controller.current_epoch}_reward_{neural_controller.epoch_accumulated_reward:.0f}_crashes_{neural_controller.total_crashes_epoch}"
+    # Speichere das finale Modell
+    final_save_prefix = f"dqn_model_final_epoch_{dqn_agent.current_epoch}_reward_{dqn_agent.epoch_accumulated_reward:.0f}_crashes_{dqn_agent.total_crashes_epoch}"
     final_save_path_prefix = os.path.join(MODEL_SAVE_DIR, final_save_prefix)
-    neural_controller.save_model(final_save_path_prefix)
-    logger.info(f"Final PPO models saved with prefix {final_save_path_prefix}")
+    dqn_agent.save_model(final_save_path_prefix)
+    logger.info(f"Final DQN model saved with prefix {final_save_path_prefix}")
 
 
-# --- Main Execution --- #
+# --- Hauptausführung --- #
 if __name__ == "__main__":
     try:
-        logger.info("Starting training script...")
+        logger.info("Starting DQN training script...")
         train_simulation()
-        logger.info("Training script finished.")
+        logger.info("DQN training script finished.")
     except Exception as e:
         logger.exception(f"An error occurred during training: {e}")
     finally:
